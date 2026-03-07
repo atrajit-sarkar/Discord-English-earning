@@ -92,9 +92,11 @@ export async function ensureUserDefaults(discordUserId) {
 export async function markQuizSeen(discordUserId, quizId) {
   try {
     const ref = doc(db, "English", discordUserId);
-    await updateDoc(ref, {
-      seenQuizzes: arrayUnion(quizId),
-    });
+    await setDoc(
+      ref,
+      { seenQuizzes: arrayUnion(quizId) },
+      { merge: true }
+    );
   } catch (err) {
     console.error("markQuizSeen:", err);
   }
