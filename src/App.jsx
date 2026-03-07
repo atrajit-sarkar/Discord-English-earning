@@ -583,12 +583,12 @@ export default function App() {
 
           applyDiscordUser(nextUser);
 
-          // Sync and stats loading stay in the background so the dashboard is not blocked.
-          void Promise.allSettled([
+          // Sync profile and ensure defaults exist before loading stats
+          await Promise.allSettled([
             upsertUserProfile(nextUser),
             ensureUserDefaults(nextUser.id),
-            loadUserStats(nextUser),
           ]);
+          await loadUserStats(nextUser);
         } catch {
           if (!isMountedRef.current) return;
           setAuthError("Could not load your Discord profile.");
@@ -607,8 +607,8 @@ export default function App() {
       if (savedUser?.id) {
         if (!isMountedRef.current) return;
         setUser(savedUser);
-        setUserStats(null);
         setAuthError("");
+        setQuizState("dashboard");
         finishLoading();
         void loadUserStats(savedUser);
         return;
