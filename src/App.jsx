@@ -8,71 +8,91 @@ const REDIRECT_URI = `${window.location.origin}${window.location.pathname}`;
 const OAUTH_STORAGE_KEY = "discord-oauth-response";
 const USER_STORAGE_KEY = "discord-user-profile";
 
-const questions = [
+const QUIZZES = {
+  "everyday-spoken": [
+    {
+      question: 'A friendly cashier says, "Hey! How\'s it going?" What is the most natural, casual response?',
+      options: ["I am functioning optimally, thank you.", "Not much, you?", "I do not know.", "It goes well."],
+      correct: 1,
+      explanation: '"Not much, you?" mirrors the casual tone perfectly.',
+    },
+    {
+      question: "Someone is speaking very fast and you completely missed their point. What should you say?",
+      options: ["I'm not sure I follow you.", "What is your meaning?", "Speak to me slower.", "I am confused by your words."],
+      correct: 0,
+      explanation: '"I\'m not sure I follow you" is polite and natural in conversation.',
+    },
+    {
+      question: "You see a friend you haven't seen in three months. What do you say?",
+      options: ["How are you existing?", "What is up?", "How have you been?", "Are you fine?"],
+      correct: 2,
+      explanation: '"How have you been?" naturally asks about the time since you last met.',
+    },
+    {
+      question: 'Which of these is a casual way to say "Hello" when passing a coworker in the hallway?',
+      options: ["Greetings to you.", "What's up?", "How do you do?", "I acknowledge you."],
+      correct: 1,
+      explanation: '"What\'s up?" is the go-to casual greeting in everyday English.',
+    },
+    {
+      question: "You didn't hear what someone just said. What is the most polite, natural response?",
+      options: ["Repeat it.", "What?", "Would you mind repeating that?", "Say again your words."],
+      correct: 2,
+      explanation: '"Would you mind repeating that?" is both polite and commonly used.',
+    },
+  ],
+  "advanced-business": [
+    {
+      question: "In a formal meeting, how would you best express that you agree with a colleague's point?",
+      options: ["I concur completely.", "You betcha.", "That is truth.", "I'm with you dog."],
+      correct: 0,
+      explanation: '"I concur completely" or simply "I agree" is professional and clear.'
+    },
+    {
+      question: "You need to delay a project deadline. What is the most professional way to tell your manager?",
+      options: ["I can't do this now.", "We need to push the deadline back.", "This is too much work.", "Give me more time."],
+      correct: 1,
+      explanation: '"We need to push the deadline back" is professional and direct.'
+    },
+    {
+      question: "How do you politely interrupt someone in a meeting?",
+      options: ["Stop talking.", "May I interject for a moment?", "Hold up.", "My turn."],
+      correct: 1,
+      explanation: '"May I interject for a moment?" is a polite and professional way to interrupt.'
+    },
+    {
+      question: "When explaining a complex issue, how can you check for understanding?",
+      options: ["Are you stupid?", "Do you understand me?", "Does that make sense?", "Get it?"],
+      correct: 2,
+      explanation: '"Does that make sense?" is a non-confrontational way to check understanding.'
+    },
+    {
+      question: "How would you formally decline a meeting invitation?",
+      options: ["No thanks.", "I'll pass.", "I am unable to attend due to prior commitments.", "Nah."],
+      correct: 2,
+      explanation: '"I am unable to attend due to prior commitments." is polite and formal.'
+    }
+  ]
+};
+
+const AVAILABLE_QUIZZES = [
   {
-    question:
-      'A friendly cashier says, "Hey! How\'s it going?" What is the most natural, casual response?',
-    options: [
-      "I am functioning optimally, thank you.",
-      "Not much, you?",
-      "I do not know.",
-      "It goes well.",
-    ],
-    correct: 1,
-    explanation: '"Not much, you?" mirrors the casual tone perfectly.',
+    id: "everyday-spoken",
+    title: "Modern Spoken English",
+    description: "Test your everyday English skills with natural, casual scenarios.",
+    image: "/general-quiz.png",
+    level: "Beginner/Int",
+    duration: "2 mins"
   },
   {
-    question:
-      "Someone is speaking very fast and you completely missed their point. What should you say?",
-    options: [
-      "I'm not sure I follow you.",
-      "What is your meaning?",
-      "Speak to me slower.",
-      "I am confused by your words.",
-    ],
-    correct: 0,
-    explanation:
-      '"I\'m not sure I follow you" is polite and natural in conversation.',
-  },
-  {
-    question:
-      "You see a friend you haven't seen in three months. What do you say?",
-    options: [
-      "How are you existing?",
-      "What is up?",
-      "How have you been?",
-      "Are you fine?",
-    ],
-    correct: 2,
-    explanation:
-      '"How have you been?" naturally asks about the time since you last met.',
-  },
-  {
-    question:
-      'Which of these is a casual way to say "Hello" when passing a coworker in the hallway?',
-    options: [
-      "Greetings to you.",
-      "What's up?",
-      "How do you do?",
-      "I acknowledge you.",
-    ],
-    correct: 1,
-    explanation:
-      '"What\'s up?" is the go-to casual greeting in everyday English.',
-  },
-  {
-    question:
-      "You didn't hear what someone just said. What is the most polite, natural response?",
-    options: [
-      "Repeat it.",
-      "What?",
-      "Would you mind repeating that?",
-      "Say again your words.",
-    ],
-    correct: 2,
-    explanation:
-      '"Would you mind repeating that?" is both polite and commonly used.',
-  },
+    id: "advanced-business",
+    title: "Advanced Business English",
+    description: "Master formal communication for the modern workplace.",
+    image: "/advanced-quiz.png",
+    level: "Advanced",
+    duration: "3 mins",
+    isNew: true
+  }
 ];
 
 const OPTION_LETTERS = ["A", "B", "C", "D"];
@@ -296,8 +316,8 @@ function FloatingParticles() {
 }
 
 /* ─── Helpers ─── */
-function getResultSummary(score) {
-  const percentage = Math.round((score / questions.length) * 100);
+function getResultSummary(score, totalQuestions) {
+  const percentage = Math.round((score / totalQuestions) * 100);
 
   if (percentage >= 80) {
     return {
@@ -389,6 +409,8 @@ export default function App() {
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [authError, setAuthError] = useState("");
   const [quizState, setQuizState] = useState("welcome");
+  const [currentQuizId, setCurrentQuizId] = useState(null);
+  const currentQuizData = currentQuizId ? QUIZZES[currentQuizId] : [];
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
@@ -471,7 +493,7 @@ export default function App() {
           writeStoredUser(u);
           setAuthError("");
           // Go straight to quiz after fresh Discord login
-          setQuizState("welcome");
+          setQuizState("dashboard");
           // Sync profile & load stats from Firestore
           await upsertUserProfile(u);
           await loadUserStats(u);
@@ -531,7 +553,7 @@ export default function App() {
       setSelectedAnswer(index);
       setAnswerRevealed(true);
 
-      const isCorrect = index === questions[currentQuestion].correct;
+      const isCorrect = index === currentQuizData[currentQuestion].correct;
 
       if (isCorrect) {
         setScore((prev) => prev + 1);
@@ -546,7 +568,7 @@ export default function App() {
 
       // Auto-advance after showing feedback
       setTimeout(async () => {
-        if (currentQuestion + 1 < questions.length) {
+        if (currentQuestion + 1 < currentQuizData.length) {
           setCurrentQuestion((prev) => prev + 1);
           setSelectedAnswer(null);
           setAnswerRevealed(false);
@@ -555,15 +577,15 @@ export default function App() {
           const finalScore = score + (isCorrect ? 1 : 0);
           const finalBestStreak = Math.max(bestStreak, isCorrect ? streak + 1 : streak);
           setQuizState("results");
-          if (finalScore >= Math.ceil(questions.length * 0.6)) {
+          if (finalScore >= Math.ceil(currentQuizData.length * 0.6)) {
             setShowConfetti(true);
           }
           // Save to Firestore
           if (user) {
-            const result = getResultSummary(finalScore);
+            const result = getResultSummary(finalScore, currentQuizData.length);
             await saveQuizResult(user.id, {
               score: finalScore,
-              total: questions.length,
+              total: currentQuizData.length,
               percentage: result.percentage,
               level: result.level,
               bestStreak: finalBestStreak,
@@ -583,7 +605,7 @@ export default function App() {
     }
 
     setWebhookStatus("sending");
-    const result = getResultSummary(score);
+    const result = getResultSummary(score, currentQuizData.length);
 
     const payload = {
       username: "English Quiz Bot",
@@ -596,7 +618,7 @@ export default function App() {
           fields: [
             {
               name: "\u{1F3AF} Score",
-              value: `**${score} / ${questions.length}** (${result.percentage}%)`,
+              value: `**${score} / ${currentQuizData.length}** (${result.percentage}%)`,
               inline: true,
             },
             {
@@ -636,12 +658,13 @@ export default function App() {
     setScore(0);
     setStreak(0);
     setBestStreak(0);
-    setQuizState("welcome");
+    setQuizState("dashboard");
     setWebhookStatus("idle");
     setSelectedAnswer(null);
     setAnswerRevealed(false);
     setQuestionKey(0);
     setShowConfetti(false);
+    setCurrentQuizId(null);
   }
 
   /* ─── Loading State ─── */
@@ -713,9 +736,9 @@ export default function App() {
   }
 
   /* ─── Quiz State ─── */
-  if (quizState === "quiz") {
-    const question = questions[currentQuestion];
-    const progress = ((currentQuestion + (answerRevealed ? 1 : 0)) / questions.length) * 100;
+  if (quizState === "quiz" && currentQuizData) {
+    const question = currentQuizData[currentQuestion];
+    const progress = ((currentQuestion + (answerRevealed ? 1 : 0)) / currentQuizData.length) * 100;
 
     return (
       <main className="page-shell">
@@ -730,7 +753,7 @@ export default function App() {
 
           <div className="quiz-header">
             <p className="eyebrow">
-              Question {currentQuestion + 1} / {questions.length}
+              Question {currentQuestion + 1} / {currentQuizData.length}
             </p>
             {streak >= 2 && (
               <div className="streak-badge" key={streak}>
@@ -827,7 +850,7 @@ export default function App() {
 
   /* ─── Results State ─── */
   if (quizState === "results") {
-    const result = getResultSummary(score);
+    const result = getResultSummary(score, currentQuizData.length);
 
     return (
       <main className="page-shell">
@@ -839,7 +862,7 @@ export default function App() {
 
           <div className="score-badge">
             <strong>
-              {score} / {questions.length}
+              {score} / {currentQuizData.length}
             </strong>
             <span>{result.percentage}%</span>
           </div>
@@ -920,6 +943,61 @@ export default function App() {
     );
   }
 
+  /* ─── Dashboard State ─── */
+  if (quizState === "dashboard" && user) {
+    return (
+      <main className="dashboard-layout page-shell">
+        <FloatingParticles />
+        <div className="dashboard-container">
+          <header className="dashboard-header">
+            <div className="dashboard-header__content">
+              <div>
+                <p className="eyebrow">{"\u{1F44B}"} Welcome back</p>
+                <h1 className="dashboard-title">{user.username}</h1>
+              </div>
+              <div className="user-panel">
+                <div className="user-chip">
+                  <img src={user.avatar} alt="" className="avatar" />
+                  <span>
+                    {"\u{2B50}"} {userStats?.totalAttempts ? `Attempts: ${userStats.totalAttempts}` : "New Player"}
+                  </span>
+                </div>
+                <button type="button" className="button button--ghost" onClick={handleLogout} style={{ fontSize: "0.8rem", height: "2.2rem", padding: "0 0.9rem", minHeight: "auto" }}>
+                  Logout
+                </button>
+              </div>
+            </div>
+          </header>
+
+          <section className="dashboard-content">
+            <h2 className="dashboard-section-title">Available Quizzes</h2>
+            <div className="quiz-grid">
+              {AVAILABLE_QUIZZES.map((quiz) => (
+                <div key={quiz.id} className="dashboard-quiz-card" onClick={() => {
+                  setCurrentQuizId(quiz.id);
+                  setQuizState("quiz");
+                }}>
+                  <div className="quiz-card__image-wrapper">
+                    <img src={quiz.image} alt={quiz.title} className="quiz-card__image" />
+                    {quiz.isNew && <span className="quiz-card__badge">New</span>}
+                  </div>
+                  <div className="quiz-card__body">
+                    <h3>{quiz.title}</h3>
+                    <p>{quiz.description}</p>
+                    <div className="quiz-card__meta">
+                      <span className="meta-tag">{"\u{1F4D8}"} {quiz.level}</span>
+                      <span className="meta-tag">{"\u{23F1}\u{FE0F}"} {quiz.duration}</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
   /* ─── Welcome / Landing State ─── */
   return (
     <main className="page-shell">
@@ -959,9 +1037,9 @@ export default function App() {
               <button
                 type="button"
                 className="button button--primary"
-                onClick={() => setQuizState("quiz")}
+                onClick={() => setQuizState("dashboard")}
               >
-                Start Quiz
+                Go to Dashboard
                 <ArrowRightIcon className="icon" />
               </button>
 
@@ -995,7 +1073,7 @@ export default function App() {
                 </li>
                 <li className="is-ready">
                   <span className="setup-list__status" />
-                  Best score: <strong style={{ marginLeft: "auto" }}>{userStats.bestScore ?? 0}/{questions.length}</strong>
+                  Best score: <strong style={{ marginLeft: "auto" }}>{userStats.bestScore ?? 0}/{currentQuizData.length}</strong>
                 </li>
                 <li className="is-ready">
                   <span className="setup-list__status" />
