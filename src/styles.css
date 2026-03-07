@@ -1040,7 +1040,7 @@ code {
 /* ─── Dashboard Layout ─── */
 .dashboard-container {
   width: 100%;
-  max-width: 1100px;
+  max-width: 1360px;
   display: flex;
   flex-direction: column;
   gap: 2rem;
@@ -1093,7 +1093,7 @@ code {
 
 .quiz-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   gap: 1.6rem;
   align-items: stretch;
   animation: cardSlideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
@@ -1161,7 +1161,7 @@ code {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: center top;
+  object-position: center center;
   transition: transform 0.45s ease, filter 0.45s ease;
 }
 
@@ -1237,7 +1237,7 @@ code {
 
 .quiz-card__meta {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
   gap: 0.75rem;
 }
 
@@ -1254,6 +1254,7 @@ code {
   border: 1px solid rgba(255, 255, 255, 0.06);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   min-height: 4.3rem;
+  overflow: hidden;
 }
 
 .meta-tag__label {
@@ -1269,6 +1270,9 @@ code {
   font-size: 0.98rem;
   font-weight: 700;
   line-height: 1.25;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  max-width: 100%;
 }
 
 /* ─── Quiz Top Bar (back button + user) ─── */

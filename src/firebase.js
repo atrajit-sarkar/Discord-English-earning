@@ -75,12 +75,28 @@ export async function ensureUserDefaults(discordUserId) {
         bestScore: 0,
         bestStreak: 0,
         quizHistory: [],
+        seenQuizzes: [],
         createdAt: serverTimestamp(),
       },
       { merge: true }
     );
   } catch (err) {
     console.error("ensureUserDefaults:", err);
+  }
+}
+
+/**
+ * Mark a quiz as "seen" by the user so the NEW badge no longer shows.
+ * Uses arrayUnion so duplicates are ignored automatically.
+ */
+export async function markQuizSeen(discordUserId, quizId) {
+  try {
+    const ref = doc(db, "English", discordUserId);
+    await updateDoc(ref, {
+      seenQuizzes: arrayUnion(quizId),
+    });
+  } catch (err) {
+    console.error("markQuizSeen:", err);
   }
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { getUserProgress, upsertUserProfile, ensureUserDefaults, saveQuizResult } from "./firebase";
+import { getUserProgress, upsertUserProfile, ensureUserDefaults, saveQuizResult, markQuizSeen } from "./firebase";
 
 const DISCORD_CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID?.trim() ?? "";
 const DISCORD_WEBHOOK_URL =
@@ -72,6 +72,38 @@ const QUIZZES = {
       correct: 2,
       explanation: '"I am unable to attend due to prior commitments." is polite and formal.'
     }
+  ],
+  "nautical-idioms": [
+    {
+      question: "If a business owner says, \"Sales are dropping this quarter, so we need to ________ by cutting costs,\" which nautical idiom completes the sentence to mean preparing for a difficult situation?",
+      options: ["Batten down the hatches", "Rock the boat", "Jump ship", "Go overboard"],
+      correct: 0,
+      explanation: '"Batten down the hatches" means to get ready for a difficult situation by preparing in every way possible. It comes from sailors securely closing a ship\'s hatches when a severe storm is approaching.',
+    },
+    {
+      question: "If you want to compliment a manager by saying they control their business or organization very firmly and effectively, which nautical idiom would you use?",
+      options: ["Steer the course", "Sail close to the wind", "Run a tight ship", "Anchor the team"],
+      correct: 2,
+      explanation: 'When someone \"runs a tight ship,\" it means they keep everything highly organized, disciplined, and functioning smoothly. Native speakers often use this in the workplace to describe a strict but highly effective leader.',
+    },
+    {
+      question: "A coworker tells you, \"We have lots of major bookings ________ and are confident of making excellent profits.\" Which nautical phrase completes the sentence to mean that something is \"likely to happen soon\"?",
+      options: ["On the horizon", "In the offing", "At the helm", "In the wake"],
+      correct: 1,
+      explanation: 'The \"offing\" was a nautical term for the part of the sea visible on the distant horizon. In modern English, if something is \"in the offing,\" it means it can be seen on the horizon and is likely to happen soon.',
+    },
+    {
+      question: "What idiom would you use to describe a situation where you have no good choices, and are placed between two equally hazardous alternatives?",
+      options: ["Caught in the doldrums", "Between the devil and the deep blue sea", "Lost at sea", "Up the creek without a paddle"],
+      correct: 1,
+      explanation: 'This proverb describes being trapped between two equally precarious situations. The \"devil\" was actually the outermost seam on the deck of a wooden ship, putting sailors dangerously close to falling into the deep ocean. Today it means being stuck between two bad options.',
+    },
+    {
+      question: "You wake up feeling ill and need to call your boss to ask for a day off. Which nautical cliché would you use to describe feeling unwell?",
+      options: ["All at sea", "In deep water", "Under the weather", "Adrift"],
+      correct: 2,
+      explanation: 'To be \"under the weather\" means to feel unwell. This expression originally referred to seasickness—suffering from nausea on board a ship because of heavy seas and bad weather. Today, it is a very common cliché to simply mean you are sick.',
+    }
   ]
 };
 
@@ -92,6 +124,16 @@ const AVAILABLE_QUIZZES = [
     image: "/advanced-quiz.png",
     tagline: "Professional English",
     level: "Advanced",
+    duration: "3 mins",
+    isNew: true
+  },
+  {
+    id: "nautical-idioms",
+    title: "Nautical-Origin Idioms",
+    description: "Master everyday English expressions that originated from Britain's rich seafaring history.",
+    image: "/nautical-origin-idioms-expressions.png",
+    tagline: "Nautical English",
+    level: "Intermediate",
     duration: "3 mins",
     isNew: true
   }
@@ -760,6 +802,11 @@ export default function App() {
     setWebhookStatus("idle");
     setUserAnswers([]);
     setQuizState("quiz");
+
+    // Mark quiz as seen so the NEW badge disappears (persisted in Firestore)
+    if (user) {
+      markQuizSeen(user.id, quizId).then(() => loadUserStats(user));
+    }
   }
 
   function handleQuizCardKeyDown(event, quizId) {
@@ -1202,7 +1249,9 @@ export default function App() {
                       decoding="async"
                     />
                     <span className="quiz-card__image-tag">{quiz.tagline}</span>
-                    {quiz.isNew && <span className="quiz-card__badge">New</span>}
+                    {quiz.isNew && !userStats?.seenQuizzes?.includes(quiz.id) && (
+                      <span className="quiz-card__badge">New</span>
+                    )}
                   </div>
                   <div className="quiz-card__body">
                     <div className="quiz-card__copy">
