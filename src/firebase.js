@@ -113,11 +113,13 @@ export async function saveQuizResult(discordUserId, result) {
     const prev = snap.exists() ? snap.data() : {};
 
     const attempt = {
+      quizId: result.quizId,
       score: result.score,
       total: result.total,
       percentage: result.percentage,
       level: result.level,
       bestStreak: result.bestStreak,
+      userAnswers: result.userAnswers ?? [],
       completedAt: new Date().toISOString(),
     };
 

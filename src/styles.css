@@ -1491,6 +1491,63 @@ code {
   font-size: 0.78rem;
 }
 
+/* ─── Activity: Quiz Name Link ─── */
+.activity-item__quiz-name {
+  background: none;
+  border: none;
+  color: var(--dc-blurple-light);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  white-space: nowrap;
+  text-decoration: none;
+  transition: color var(--dc-transition);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activity-item__quiz-name:hover {
+  color: #fff;
+  text-decoration: underline;
+}
+
+/* ─── Activity: View Results Button ─── */
+.activity-item__review-btn {
+  font-size: 0.72rem !important;
+  padding: 0.22rem 0.6rem !important;
+  min-height: 1.6rem !important;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ─── Quiz Card Glow Effect (scroll-to) ─── */
+@keyframes quizCardGlow {
+  0% {
+    box-shadow: 0 0 0 0 rgba(88, 101, 242, 0.5), 0 18px 45px rgba(0, 0, 0, 0.3);
+    border-color: rgba(88, 101, 242, 0.8);
+  }
+  50% {
+    box-shadow: 0 0 24px 8px rgba(88, 101, 242, 0.35), 0 18px 45px rgba(0, 0, 0, 0.3);
+    border-color: rgba(88, 101, 242, 0.9);
+  }
+  100% {
+    box-shadow: 0 18px 45px rgba(0, 0, 0, 0.3);
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+}
+
+.quiz-card--glow {
+  animation: quizCardGlow 1.8s ease-out forwards;
+}
+
+/* ─── Meta tag accent variant (attempts) ─── */
+.meta-tag--accent {
+  background: rgba(88, 101, 242, 0.08);
+  border-color: rgba(88, 101, 242, 0.18);
+}
+
 @media (max-width: 640px) {
   .stats-row {
     grid-template-columns: repeat(2, 1fr);

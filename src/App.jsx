@@ -482,6 +482,8 @@ export default function App() {
   const authBootstrapStartedRef = useRef(false);
   const isMountedRef = useRef(false);
   const [userAnswers, setUserAnswers] = useState([]);
+  const [pastReviewAttempt, setPastReviewAttempt] = useState(null);
+  const quizCardRefs = useRef({});
 
   const discordConfigured = !isPlaceholder(DISCORD_CLIENT_ID);
   const webhookConfigured = !isPlaceholder(DISCORD_WEBHOOK_URL);
@@ -696,11 +698,13 @@ export default function App() {
     if (user) {
       const result = getResultSummary(finalScore, currentQuizData.length);
       await saveQuizResult(user.id, {
+        quizId: currentQuizId,
         score: finalScore,
         total: currentQuizData.length,
         percentage: result.percentage,
         level: result.level,
         bestStreak: maxStreak,
+        userAnswers: allAnswers,
       });
       await loadUserStats(user);
     }
@@ -807,6 +811,20 @@ export default function App() {
     if (user) {
       markQuizSeen(user.id, quizId).then(() => loadUserStats(user));
     }
+  }
+
+  function scrollToQuizCard(quizId) {
+    const el = quizCardRefs.current[quizId];
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+      el.classList.add("quiz-card--glow");
+      setTimeout(() => el.classList.remove("quiz-card--glow"), 1800);
+    }
+  }
+
+  function handleViewPastAttempt(attempt) {
+    setPastReviewAttempt(attempt);
+    setQuizState("past-review");
   }
 
   function handleQuizCardKeyDown(event, quizId) {
@@ -1062,6 +1080,85 @@ export default function App() {
     );
   }
 
+  /* ─── Past Attempt Review State ─── */
+  if (quizState === "past-review" && pastReviewAttempt) {
+    const pastQuizData = QUIZZES[pastReviewAttempt.quizId] ?? [];
+    const pastQuizTitle = AVAILABLE_QUIZZES.find(q => q.id === pastReviewAttempt.quizId)?.title ?? "Quiz";
+
+    return (
+      <main className="page-shell">
+        <FloatingParticles />
+        <section className="card review-card">
+          <div className="quiz-topbar">
+            <button
+              type="button"
+              className="button button--ghost quiz-back-btn"
+              onClick={() => { setPastReviewAttempt(null); setQuizState("dashboard"); }}
+            >
+              <ArrowLeftIcon className="icon" />
+              Dashboard
+            </button>
+            <span className="quiz-topbar__user" style={{ fontWeight: 700, color: "var(--dc-text-primary)" }}>
+              {pastQuizTitle} — Past Attempt
+            </span>
+          </div>
+
+          <div className="review-summary">
+            <span className="review-summary__score">
+              {pastReviewAttempt.score} / {pastReviewAttempt.total} correct ({pastReviewAttempt.percentage}%)
+            </span>
+            <span style={{ fontSize: "0.82rem", color: "var(--dc-text-muted)" }}>
+              {pastReviewAttempt.completedAt ? new Date(pastReviewAttempt.completedAt).toLocaleString() : ""}
+            </span>
+          </div>
+
+          <div className="review-list">
+            {pastQuizData.map((q, i) => {
+              const userAns = pastReviewAttempt.userAnswers?.[i];
+              const isCorrect = userAns === q.correct;
+              return (
+                <div key={i} className={`review-item ${isCorrect ? "review-item--correct" : "review-item--wrong"}`}>
+                  <div className="review-item__header">
+                    <span className="review-item__number">Q{i + 1}</span>
+                    <span className={`review-item__badge ${isCorrect ? "review-item__badge--correct" : "review-item__badge--wrong"}`}>
+                      {isCorrect ? "Correct" : "Incorrect"}
+                    </span>
+                  </div>
+                  <p className="review-item__question">{q.question}</p>
+                  <div className="review-item__answers">
+                    {q.options.map((opt, j) => {
+                      let cls = "review-option";
+                      if (j === q.correct) cls += " review-option--correct";
+                      if (j === userAns && j !== q.correct) cls += " review-option--wrong";
+                      return (
+                        <div key={j} className={cls}>
+                          <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
+                          <span>{opt}</span>
+                          {j === q.correct && <CheckIcon className="icon review-option__icon" />}
+                          {j === userAns && j !== q.correct && <ErrorIcon className="icon review-option__icon" />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="review-item__explanation">
+                    <strong>{"\u{1F4A1}"} Explanation:</strong> {q.explanation}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="actions" style={{ justifyContent: "center", marginTop: "1.5rem" }}>
+            <button type="button" className="button button--primary" onClick={() => { setPastReviewAttempt(null); setQuizState("dashboard"); }}>
+              <ArrowLeftIcon className="icon" />
+              Back to Dashboard
+            </button>
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   /* ─── Results State ─── */
   if (quizState === "results") {
     const result = getResultSummary(score, currentQuizData.length);
@@ -1230,9 +1327,12 @@ export default function App() {
           <section className="dashboard-content">
             <h2 className="dashboard-section-title">Available Quizzes</h2>
             <div className="quiz-grid">
-              {AVAILABLE_QUIZZES.map((quiz) => (
+              {AVAILABLE_QUIZZES.map((quiz) => {
+                const attemptCount = userStats?.quizHistory?.filter(h => h.quizId === quiz.id).length ?? 0;
+                return (
                 <div
                   key={quiz.id}
+                  ref={(el) => { quizCardRefs.current[quiz.id] = el; }}
                   className="dashboard-quiz-card"
                   role="button"
                   tabIndex={0}
@@ -1271,6 +1371,12 @@ export default function App() {
                         <span className="meta-tag__label">Questions</span>
                         <span className="meta-tag__value">{QUIZZES[quiz.id]?.length ?? 0}</span>
                       </span>
+                      {attemptCount > 0 && (
+                        <span className="meta-tag meta-tag--accent">
+                          <span className="meta-tag__label">Attempts</span>
+                          <span className="meta-tag__value">{attemptCount}</span>
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="quiz-card__cta">
@@ -1278,7 +1384,8 @@ export default function App() {
                     <ArrowRightIcon className="icon" />
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </section>
 
@@ -1287,8 +1394,20 @@ export default function App() {
             <section className="dashboard-content">
               <h2 className="dashboard-section-title">Recent Activity</h2>
               <div className="activity-list">
-                {userStats.quizHistory.slice(-5).reverse().map((h, i) => (
+                {userStats.quizHistory.slice(-5).reverse().map((h, i) => {
+                  const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === h.quizId);
+                  return (
                   <div key={i} className="activity-item">
+                    {quizMeta && (
+                      <button
+                        type="button"
+                        className="activity-item__quiz-name"
+                        onClick={() => scrollToQuizCard(h.quizId)}
+                        title={`Scroll to ${quizMeta.title}`}
+                      >
+                        {quizMeta.title}
+                      </button>
+                    )}
                     <div className="activity-item__score">
                       <strong>{h.score}/{h.total}</strong>
                       <span>({h.percentage}%)</span>
@@ -1299,8 +1418,18 @@ export default function App() {
                     <span className="activity-item__date">
                       {h.completedAt ? new Date(h.completedAt).toLocaleDateString() : "—"}
                     </span>
+                    {h.userAnswers?.length > 0 && (
+                      <button
+                        type="button"
+                        className="button button--ghost activity-item__review-btn"
+                        onClick={() => handleViewPastAttempt(h)}
+                      >
+                        View Results
+                      </button>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </section>
           )}
