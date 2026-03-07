@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { getUserProgress, upsertUserProfile, ensureUserDefaults, saveQuizResult, markQuizSeen } from "./firebase";
 import modernSpokenQuizImage from "../modern-spoken-quiz.png";
 import businessQuizImage from "../business-quiz.png";
+import nauticalQuizImage from "../public/nautical-origin-idioms-expressions.png";
 
 const DISCORD_CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID?.trim() ?? "";
 const DISCORD_WEBHOOK_URL =
@@ -141,7 +142,7 @@ const AVAILABLE_QUIZZES = [
     id: "nautical-idioms",
     title: "Nautical-Origin Idioms",
     description: "Master everyday English expressions that originated from Britain's rich seafaring history.",
-    image: "/nautical-origin-idioms-expressions.png",
+    image: nauticalQuizImage,
     tagline: "Nautical English",
     level: "Intermediate",
     duration: "3 mins",
