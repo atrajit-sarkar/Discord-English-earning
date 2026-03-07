@@ -81,6 +81,7 @@ const AVAILABLE_QUIZZES = [
     title: "Modern Spoken English",
     description: "Test your everyday English skills with natural, casual scenarios.",
     image: "/general-quiz.png",
+    tagline: "Everyday English",
     level: "Beginner/Int",
     duration: "2 mins"
   },
@@ -89,6 +90,7 @@ const AVAILABLE_QUIZZES = [
     title: "Advanced Business English",
     description: "Master formal communication for the modern workplace.",
     image: "/advanced-quiz.png",
+    tagline: "Professional English",
     level: "Advanced",
     duration: "3 mins",
     isNew: true
@@ -745,6 +747,30 @@ export default function App() {
     setUserAnswers([]);
   }
 
+  function handleStartQuiz(quizId) {
+    setCurrentQuizId(quizId);
+    setCurrentQuestion(0);
+    setScore(0);
+    setStreak(0);
+    setBestStreak(0);
+    setSelectedAnswer(null);
+    setAnswerRevealed(false);
+    setQuestionKey(0);
+    setShowConfetti(false);
+    setWebhookStatus("idle");
+    setUserAnswers([]);
+    setQuizState("quiz");
+  }
+
+  function handleQuizCardKeyDown(event, quizId) {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    event.preventDefault();
+    handleStartQuiz(quizId);
+  }
+
   /* ─── Loading State ─── */
   if (loadingAuth) {
     return (
@@ -1158,17 +1184,14 @@ export default function App() {
             <h2 className="dashboard-section-title">Available Quizzes</h2>
             <div className="quiz-grid">
               {AVAILABLE_QUIZZES.map((quiz) => (
-                <div key={quiz.id} className="dashboard-quiz-card" onClick={() => {
-                  setCurrentQuizId(quiz.id);
-                  setCurrentQuestion(0);
-                  setScore(0);
-                  setStreak(0);
-                  setBestStreak(0);
-                  setSelectedAnswer(null);
-                  setAnswerRevealed(false);
-                  setQuestionKey(0);
-                  setQuizState("quiz");
-                }}>
+                <div
+                  key={quiz.id}
+                  className="dashboard-quiz-card"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleStartQuiz(quiz.id)}
+                  onKeyDown={(event) => handleQuizCardKeyDown(event, quiz.id)}
+                >
                   <div className="quiz-card__image-wrapper">
                     <img
                       src={quiz.image}
@@ -1178,15 +1201,27 @@ export default function App() {
                       loading="lazy"
                       decoding="async"
                     />
+                    <span className="quiz-card__image-tag">{quiz.tagline}</span>
                     {quiz.isNew && <span className="quiz-card__badge">New</span>}
                   </div>
                   <div className="quiz-card__body">
-                    <h3>{quiz.title}</h3>
-                    <p>{quiz.description}</p>
+                    <div className="quiz-card__copy">
+                      <h3>{quiz.title}</h3>
+                      <p>{quiz.description}</p>
+                    </div>
                     <div className="quiz-card__meta">
-                      <span className="meta-tag">{"\u{1F4D8}"} {quiz.level}</span>
-                      <span className="meta-tag">{"\u{23F1}\u{FE0F}"} {quiz.duration}</span>
-                      <span className="meta-tag">{"\u{2753}"} {QUIZZES[quiz.id]?.length ?? 0} Qs</span>
+                      <span className="meta-tag">
+                        <span className="meta-tag__label">Level</span>
+                        <span className="meta-tag__value">{quiz.level}</span>
+                      </span>
+                      <span className="meta-tag">
+                        <span className="meta-tag__label">Duration</span>
+                        <span className="meta-tag__value">{quiz.duration}</span>
+                      </span>
+                      <span className="meta-tag">
+                        <span className="meta-tag__label">Questions</span>
+                        <span className="meta-tag__value">{QUIZZES[quiz.id]?.length ?? 0}</span>
+                      </span>
                     </div>
                   </div>
                   <div className="quiz-card__cta">
