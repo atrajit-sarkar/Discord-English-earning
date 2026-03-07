@@ -1170,9 +1170,14 @@ export default function App() {
                   setQuizState("quiz");
                 }}>
                   <div className="quiz-card__image-wrapper">
-                    <div className="quiz-card__image-placeholder">
-                      <span className="quiz-card__image-emoji">{quiz.level === "Advanced" ? "\u{1F4BC}" : "\u{1F4AC}"}</span>
-                    </div>
+                    <img
+                      src={quiz.image}
+                      alt=""
+                      aria-hidden="true"
+                      className="quiz-card__image"
+                      loading="lazy"
+                      decoding="async"
+                    />
                     {quiz.isNew && <span className="quiz-card__badge">New</span>}
                   </div>
                   <div className="quiz-card__body">
