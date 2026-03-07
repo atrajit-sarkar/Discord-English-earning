@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { getUserProgress, upsertUserProfile, ensureUserDefaults, saveQuizResult, markQuizSeen } from "./firebase";
+import modernSpokenQuizImage from "../modern-spoken-quiz.png";
+import businessQuizImage from "../business-quiz.png";
 
 const DISCORD_CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID?.trim() ?? "";
 const DISCORD_WEBHOOK_URL =
@@ -7,6 +9,14 @@ const DISCORD_WEBHOOK_URL =
 const REDIRECT_URI = `${window.location.origin}${window.location.pathname}`;
 const OAUTH_STORAGE_KEY = "discord-oauth-response";
 const USER_STORAGE_KEY = "discord-user-profile";
+const USER_STATS_STORAGE_KEY_PREFIX = "discord-user-stats:";
+const EMPTY_USER_STATS = Object.freeze({
+  totalAttempts: 0,
+  bestScore: 0,
+  bestStreak: 0,
+  quizHistory: [],
+  seenQuizzes: [],
+});
 
 const QUIZZES = {
   "everyday-spoken": [
@@ -112,7 +122,7 @@ const AVAILABLE_QUIZZES = [
     id: "everyday-spoken",
     title: "Modern Spoken English",
     description: "Test your everyday English skills with natural, casual scenarios.",
-    image: "/general-quiz.png",
+    image: modernSpokenQuizImage,
     tagline: "Everyday English",
     level: "Beginner/Int",
     duration: "2 mins"
@@ -121,7 +131,7 @@ const AVAILABLE_QUIZZES = [
     id: "advanced-business",
     title: "Advanced Business English",
     description: "Master formal communication for the modern workplace.",
-    image: "/advanced-quiz.png",
+    image: businessQuizImage,
     tagline: "Professional English",
     level: "Advanced",
     duration: "3 mins",
@@ -461,10 +471,81 @@ function clearStoredUser() {
   } catch {}
 }
 
+function getUserStatsStorageKey(userId) {
+  return `${USER_STATS_STORAGE_KEY_PREFIX}${userId}`;
+}
+
+function normalizeUserStats(progress) {
+  const safeProgress =
+    progress && typeof progress === "object" ? progress : EMPTY_USER_STATS;
+  const quizHistory = Array.isArray(safeProgress.quizHistory)
+    ? safeProgress.quizHistory
+    : [];
+  const derivedBestScore = quizHistory.reduce(
+    (best, attempt) => Math.max(best, attempt?.score ?? 0),
+    0
+  );
+  const derivedBestStreak = quizHistory.reduce(
+    (best, attempt) => Math.max(best, attempt?.bestStreak ?? 0),
+    0
+  );
+  const seenQuizzes = new Set(
+    Array.isArray(safeProgress.seenQuizzes) ? safeProgress.seenQuizzes : []
+  );
+
+  quizHistory.forEach((attempt) => {
+    if (attempt?.quizId) {
+      seenQuizzes.add(attempt.quizId);
+    }
+  });
+
+  return {
+    ...EMPTY_USER_STATS,
+    ...safeProgress,
+    totalAttempts:
+      typeof safeProgress.totalAttempts === "number"
+        ? Math.max(safeProgress.totalAttempts, quizHistory.length)
+        : quizHistory.length,
+    bestScore:
+      typeof safeProgress.bestScore === "number"
+        ? Math.max(safeProgress.bestScore, derivedBestScore)
+        : derivedBestScore,
+    bestStreak:
+      typeof safeProgress.bestStreak === "number"
+        ? Math.max(safeProgress.bestStreak, derivedBestStreak)
+        : derivedBestStreak,
+    quizHistory,
+    seenQuizzes: Array.from(seenQuizzes),
+  };
+}
+
+function readStoredUserStats(userId) {
+  if (!userId) return null;
+
+  try {
+    const val = window.localStorage.getItem(getUserStatsStorageKey(userId));
+    return val ? normalizeUserStats(JSON.parse(val)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredUserStats(userId, stats) {
+  if (!userId) return;
+
+  try {
+    window.localStorage.setItem(
+      getUserStatsStorageKey(userId),
+      JSON.stringify(normalizeUserStats(stats))
+    );
+  } catch {}
+}
+
 /* ─── Main App ─── */
 export default function App() {
   const [user, setUser] = useState(null);
   const [userStats, setUserStats] = useState(null);
+  const [loadingUserStats, setLoadingUserStats] = useState(false);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [authError, setAuthError] = useState("");
   const [quizState, setQuizState] = useState("welcome");
@@ -487,12 +568,53 @@ export default function App() {
 
   const discordConfigured = !isPlaceholder(DISCORD_CLIENT_ID);
   const webhookConfigured = !isPlaceholder(DISCORD_WEBHOOK_URL);
+  const userStatsView = userStats ?? EMPTY_USER_STATS;
+  const recentQuizHistory = userStatsView.quizHistory;
+  const seenQuizIds = new Set(userStatsView.seenQuizzes);
 
   /* Load Firestore stats for a given user */
-  async function loadUserStats(u) {
-    const progress = await getUserProgress(u.id);
-    if (!isMountedRef.current) return;
-    setUserStats(progress ?? null);
+  async function loadUserStats(u, options = {}) {
+    if (!u?.id) return EMPTY_USER_STATS;
+
+    const { syncProfile = true } = options;
+    const cachedProgress = readStoredUserStats(u.id);
+
+    if (isMountedRef.current) {
+      if (cachedProgress) {
+        setUserStats(cachedProgress);
+      }
+      setLoadingUserStats(true);
+    }
+
+    try {
+      const syncTasks = [ensureUserDefaults(u.id)];
+      if (syncProfile) {
+        syncTasks.unshift(upsertUserProfile(u));
+      }
+
+      await Promise.allSettled(syncTasks);
+
+      const progress = await getUserProgress(u.id);
+      const nextStats =
+        progress === null && cachedProgress
+          ? cachedProgress
+          : normalizeUserStats(progress);
+
+      if (!isMountedRef.current) return nextStats;
+      setUserStats(nextStats);
+      writeStoredUserStats(u.id, nextStats);
+      return nextStats;
+    } catch (err) {
+      console.error("loadUserStats:", err);
+      const fallbackStats = cachedProgress ?? EMPTY_USER_STATS;
+      if (!isMountedRef.current) return fallbackStats;
+      setUserStats(fallbackStats);
+      return fallbackStats;
+    } finally {
+      if (isMountedRef.current) {
+        setLoadingUserStats(false);
+      }
+    }
   }
 
   useEffect(() => {
@@ -513,12 +635,14 @@ export default function App() {
 
     function applyDiscordUser(nextUser) {
       if (!isMountedRef.current) return;
+      const cachedProgress = readStoredUserStats(nextUser.id);
       setUser(nextUser);
-      setUserStats(null);
+      setUserStats(cachedProgress);
+      setLoadingUserStats(true);
       writeStoredUser(nextUser);
       setAuthError("");
       setQuizState("dashboard");
-      setLoadingAuth(false);
+      return cachedProgress;
     }
 
     async function bootstrapAuth() {
@@ -581,14 +705,12 @@ export default function App() {
               : "https://cdn.discordapp.com/embed/avatars/0.png",
           };
 
-          applyDiscordUser(nextUser);
-
-          // Sync profile and ensure defaults exist before loading stats
-          await Promise.allSettled([
-            upsertUserProfile(nextUser),
-            ensureUserDefaults(nextUser.id),
-          ]);
+          const cachedProgress = applyDiscordUser(nextUser);
+          if (cachedProgress) {
+            finishLoading();
+          }
           await loadUserStats(nextUser);
+          finishLoading();
         } catch {
           if (!isMountedRef.current) return;
           setAuthError("Could not load your Discord profile.");
@@ -605,12 +727,12 @@ export default function App() {
       const savedUser = readStoredUser();
 
       if (savedUser?.id) {
-        if (!isMountedRef.current) return;
-        setUser(savedUser);
-        setAuthError("");
-        setQuizState("dashboard");
+        const cachedProgress = applyDiscordUser(savedUser);
+        if (cachedProgress) {
+          finishLoading();
+        }
+        await loadUserStats(savedUser);
         finishLoading();
-        void loadUserStats(savedUser);
         return;
       }
 
@@ -646,6 +768,7 @@ export default function App() {
     clearStoredUser();
     setUser(null);
     setUserStats(null);
+    setLoadingUserStats(false);
     setQuizState("welcome");
   }
 
@@ -706,7 +829,7 @@ export default function App() {
         bestStreak: maxStreak,
         userAnswers: allAnswers,
       });
-      await loadUserStats(user);
+      await loadUserStats(user, { syncProfile: false });
     }
   }
 
@@ -809,7 +932,21 @@ export default function App() {
 
     // Mark quiz as seen so the NEW badge disappears (persisted in Firestore)
     if (user) {
-      markQuizSeen(user.id, quizId).then(() => loadUserStats(user));
+      setUserStats((prev) => {
+        if (!prev) return prev;
+
+        const nextStats = normalizeUserStats({
+          ...prev,
+          seenQuizzes: [...(prev.seenQuizzes ?? []), quizId],
+        });
+
+        writeStoredUserStats(user.id, nextStats);
+        return nextStats;
+      });
+
+      void markQuizSeen(user.id, quizId).then(() =>
+        loadUserStats(user, { syncProfile: false })
+      );
     }
   }
 
@@ -1288,26 +1425,33 @@ export default function App() {
             </div>
           </header>
 
+          {loadingUserStats && !userStats && (
+            <div className="notice notice--warning" style={{ marginBottom: "1.25rem" }}>
+              <SpinnerIcon className="icon icon--spin" />
+              <span>Syncing your progress from Firestore...</span>
+            </div>
+          )}
+
           {/* Stats Cards Row */}
           <section className="stats-row">
             <div className="stat-card">
               <div className="stat-card__icon stat-card__icon--blue">{"\u{1F3AF}"}</div>
               <div className="stat-card__info">
-                <span className="stat-card__value">{userStats?.totalAttempts ?? 0}</span>
+                <span className="stat-card__value">{userStatsView.totalAttempts}</span>
                 <span className="stat-card__label">Quizzes Taken</span>
               </div>
             </div>
             <div className="stat-card">
               <div className="stat-card__icon stat-card__icon--green">{"\u{1F451}"}</div>
               <div className="stat-card__info">
-                <span className="stat-card__value">{userStats?.bestScore ?? 0}</span>
+                <span className="stat-card__value">{userStatsView.bestScore}</span>
                 <span className="stat-card__label">Best Score</span>
               </div>
             </div>
             <div className="stat-card">
               <div className="stat-card__icon stat-card__icon--orange">{"\u{1F525}"}</div>
               <div className="stat-card__info">
-                <span className="stat-card__value">{userStats?.bestStreak ?? 0}</span>
+                <span className="stat-card__value">{userStatsView.bestStreak}</span>
                 <span className="stat-card__label">Best Streak</span>
               </div>
             </div>
@@ -1315,8 +1459,8 @@ export default function App() {
               <div className="stat-card__icon stat-card__icon--purple">{"\u{1F4CA}"}</div>
               <div className="stat-card__info">
                 <span className="stat-card__value">
-                  {userStats?.quizHistory?.length
-                    ? `${Math.round(userStats.quizHistory.reduce((s, h) => s + (h.percentage ?? 0), 0) / userStats.quizHistory.length)}%`
+                  {recentQuizHistory.length
+                    ? `${Math.round(recentQuizHistory.reduce((s, h) => s + (h.percentage ?? 0), 0) / recentQuizHistory.length)}%`
                     : "—"}
                 </span>
                 <span className="stat-card__label">Avg Score</span>
@@ -1328,7 +1472,7 @@ export default function App() {
             <h2 className="dashboard-section-title">Available Quizzes</h2>
             <div className="quiz-grid">
               {AVAILABLE_QUIZZES.map((quiz) => {
-                const attemptCount = userStats?.quizHistory?.filter(h => h.quizId === quiz.id).length ?? 0;
+                const attemptCount = recentQuizHistory.filter((h) => h.quizId === quiz.id).length;
                 return (
                 <div
                   key={quiz.id}
@@ -1349,7 +1493,7 @@ export default function App() {
                       decoding="async"
                     />
                     <span className="quiz-card__image-tag">{quiz.tagline}</span>
-                    {quiz.isNew && !userStats?.seenQuizzes?.includes(quiz.id) && (
+                    {quiz.isNew && (!loadingUserStats || userStats) && !seenQuizIds.has(quiz.id) && (
                       <span className="quiz-card__badge">New</span>
                     )}
                   </div>
@@ -1390,11 +1534,11 @@ export default function App() {
           </section>
 
           {/* Recent Activity */}
-          {userStats?.quizHistory?.length > 0 && (
+          {recentQuizHistory.length > 0 && (
             <section className="dashboard-content">
               <h2 className="dashboard-section-title">Recent Activity</h2>
               <div className="activity-list">
-                {userStats.quizHistory.slice(-5).reverse().map((h, i) => {
+                {recentQuizHistory.slice(-5).reverse().map((h, i) => {
                   const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === h.quizId);
                   return (
                   <div key={i} className="activity-item">

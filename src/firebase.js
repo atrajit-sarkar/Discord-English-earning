@@ -4,7 +4,6 @@ import {
   doc,
   getDoc,
   setDoc,
-  updateDoc,
   arrayUnion,
   serverTimestamp,
 } from "firebase/firestore";
@@ -123,13 +122,18 @@ export async function saveQuizResult(discordUserId, result) {
       completedAt: new Date().toISOString(),
     };
 
-    await updateDoc(ref, {
-      totalAttempts: (prev.totalAttempts ?? 0) + 1,
-      bestScore: Math.max(prev.bestScore ?? 0, result.score),
-      bestStreak: Math.max(prev.bestStreak ?? 0, result.bestStreak),
-      lastPlayed: serverTimestamp(),
-      quizHistory: arrayUnion(attempt),
-    });
+    await setDoc(
+      ref,
+      {
+        totalAttempts: (prev.totalAttempts ?? 0) + 1,
+        bestScore: Math.max(prev.bestScore ?? 0, result.score),
+        bestStreak: Math.max(prev.bestStreak ?? 0, result.bestStreak),
+        lastPlayed: serverTimestamp(),
+        quizHistory: arrayUnion(attempt),
+        seenQuizzes: arrayUnion(result.quizId),
+      },
+      { merge: true }
+    );
   } catch (err) {
     console.error("saveQuizResult:", err);
   }
