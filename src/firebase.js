@@ -62,23 +62,23 @@ export async function upsertUserProfile(user) {
 
 /**
  * Ensure default stats fields exist for a brand-new user.
- * Called once after first login — uses merge so it won't overwrite existing data.
+ * Only writes when the document does not yet exist so existing
+ * stats / quiz history are never overwritten.
  */
 export async function ensureUserDefaults(discordUserId) {
   try {
     const ref = doc(db, "English", discordUserId);
-    await setDoc(
-      ref,
-      {
-        totalAttempts: 0,
-        bestScore: 0,
-        bestStreak: 0,
-        quizHistory: [],
-        seenQuizzes: [],
-        createdAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
+    const snap = await getDoc(ref);
+    if (snap.exists()) return;
+
+    await setDoc(ref, {
+      totalAttempts: 0,
+      bestScore: 0,
+      bestStreak: 0,
+      quizHistory: [],
+      seenQuizzes: [],
+      createdAt: serverTimestamp(),
+    });
   } catch (err) {
     console.error("ensureUserDefaults:", err);
   }
