@@ -435,6 +435,9 @@ export default function App() {
   const [answerRevealed, setAnswerRevealed] = useState(false);
   const [questionKey, setQuestionKey] = useState(0);
   const [showConfetti, setShowConfetti] = useState(false);
+  const authBootstrapStartedRef = useRef(false);
+  const isMountedRef = useRef(false);
+  const [userAnswers, setUserAnswers] = useState([]);
 
   const discordConfigured = !isPlaceholder(DISCORD_CLIENT_ID);
   const webhookConfigured = !isPlaceholder(DISCORD_WEBHOOK_URL);
@@ -442,100 +445,138 @@ export default function App() {
   /* Load Firestore stats for a given user */
   async function loadUserStats(u) {
     const progress = await getUserProgress(u.id);
-    if (progress) setUserStats(progress);
+    if (!isMountedRef.current) return;
+    setUserStats(progress ?? null);
   }
 
   useEffect(() => {
-    /* 1. Check for an OAuth callback in the URL hash */
-    const fragment = new URLSearchParams(window.location.hash.slice(1));
-    const hashPayload = {
-      accessToken: fragment.get("access_token"),
-      tokenType: fragment.get("token_type"),
-      oauthError: fragment.get("error"),
-      oauthErrorDescription: fragment.get("error_description"),
-    };
-    const hasHashPayload = Object.values(hashPayload).some(Boolean);
+    isMountedRef.current = true;
 
-    if (hasHashPayload) {
-      writeStoredOauthResponse(hashPayload);
+    if (authBootstrapStartedRef.current) {
+      return () => {
+        isMountedRef.current = false;
+      };
     }
 
-    if (window.location.hash) {
-      window.history.replaceState(
-        null,
-        "",
-        `${window.location.pathname}${window.location.search}`
-      );
-    }
+    authBootstrapStartedRef.current = true;
 
-    const oauthPayload = readStoredOauthResponse();
-    const accessToken = oauthPayload?.accessToken ?? "";
-    const tokenType = oauthPayload?.tokenType ?? "";
-    const oauthError = oauthPayload?.oauthError ?? "";
-    const oauthErrorDescription = oauthPayload?.oauthErrorDescription ?? "";
-
-    if (oauthError) {
-      setAuthError(
-        oauthErrorDescription?.replace(/\+/g, " ") ||
-          "Discord login was cancelled or denied."
-      );
-      clearStoredOauthResponse();
+    function finishLoading() {
+      if (!isMountedRef.current) return;
       setLoadingAuth(false);
-      return;
     }
 
-    /* 2. If we have a fresh token from the hash, fetch profile */
-    if (accessToken && tokenType) {
-      let ignore = false;
+    function applyDiscordUser(nextUser) {
+      if (!isMountedRef.current) return;
+      setUser(nextUser);
+      setUserStats(null);
+      writeStoredUser(nextUser);
+      setAuthError("");
+      setQuizState("dashboard");
+      setLoadingAuth(false);
+    }
 
-      fetch("https://discord.com/api/users/@me", {
-        headers: { authorization: `${tokenType} ${accessToken}` },
-      })
-        .then(async (response) => {
-          if (!response.ok) throw new Error("Failed to fetch Discord profile.");
-          return response.json();
-        })
-        .then(async (profile) => {
-          if (ignore) return;
-          const u = {
+    async function bootstrapAuth() {
+      /* 1. Check for an OAuth callback in the URL hash */
+      const fragment = new URLSearchParams(window.location.hash.slice(1));
+      const hashPayload = {
+        accessToken: fragment.get("access_token"),
+        tokenType: fragment.get("token_type"),
+        oauthError: fragment.get("error"),
+        oauthErrorDescription: fragment.get("error_description"),
+      };
+      const hasHashPayload = Object.values(hashPayload).some(Boolean);
+
+      if (hasHashPayload) {
+        writeStoredOauthResponse(hashPayload);
+      }
+
+      if (window.location.hash) {
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${window.location.search}`
+        );
+      }
+
+      const oauthPayload = readStoredOauthResponse();
+      const accessToken = oauthPayload?.accessToken ?? "";
+      const tokenType = oauthPayload?.tokenType ?? "";
+      const oauthError = oauthPayload?.oauthError ?? "";
+      const oauthErrorDescription = oauthPayload?.oauthErrorDescription ?? "";
+
+      if (oauthError) {
+        if (!isMountedRef.current) return;
+        setAuthError(
+          oauthErrorDescription?.replace(/\+/g, " ") ||
+            "Discord login was cancelled or denied."
+        );
+        clearStoredOauthResponse();
+        finishLoading();
+        return;
+      }
+
+      /* 2. If we have a fresh token from the hash, fetch profile */
+      if (accessToken && tokenType) {
+        try {
+          const response = await fetch("https://discord.com/api/users/@me", {
+            headers: { authorization: `${tokenType} ${accessToken}` },
+          });
+
+          if (!response.ok) {
+            throw new Error("Failed to fetch Discord profile.");
+          }
+
+          const profile = await response.json();
+          const nextUser = {
             id: profile.id,
             username: profile.username,
             avatar: profile.avatar
               ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png`
               : "https://cdn.discordapp.com/embed/avatars/0.png",
           };
-          setUser(u);
-          writeStoredUser(u);
-          setAuthError("");
-          setQuizState("dashboard");
-          setLoadingAuth(false);
-          // Fire-and-forget: sync profile & defaults to Firestore (don't block UI)
-          upsertUserProfile(u).then(() => ensureUserDefaults(u.id));
-          // Load stats in background
-          loadUserStats(u);
-        })
-        .catch(() => {
-          if (ignore) return;
+
+          applyDiscordUser(nextUser);
+
+          // Sync and stats loading stay in the background so the dashboard is not blocked.
+          void Promise.allSettled([
+            upsertUserProfile(nextUser),
+            ensureUserDefaults(nextUser.id),
+            loadUserStats(nextUser),
+          ]);
+        } catch {
+          if (!isMountedRef.current) return;
           setAuthError("Could not load your Discord profile.");
-          setLoadingAuth(false);
-        })
-        .finally(() => {
+          finishLoading();
+        } finally {
           clearStoredOauthResponse();
-        });
+        }
 
-      return () => { ignore = true; };
-    }
+        return;
+      }
 
-    /* 3. No fresh token — try restoring from localStorage */
-    clearStoredOauthResponse();
-    const savedUser = readStoredUser();
-    if (savedUser?.id) {
-      setUser(savedUser);
-      loadUserStats(savedUser).finally(() => setLoadingAuth(false));
-    } else {
+      /* 3. No fresh token — try restoring from localStorage */
+      clearStoredOauthResponse();
+      const savedUser = readStoredUser();
+
+      if (savedUser?.id) {
+        if (!isMountedRef.current) return;
+        setUser(savedUser);
+        setUserStats(null);
+        setAuthError("");
+        finishLoading();
+        void loadUserStats(savedUser);
+        return;
+      }
+
       /* 4. No saved user — show login page (no auto-redirect) */
-      setLoadingAuth(false);
+      finishLoading();
     }
+
+    void bootstrapAuth();
+
+    return () => {
+      isMountedRef.current = false;
+    };
   }, []);
 
   function handleDiscordLogin() {
@@ -562,57 +603,64 @@ export default function App() {
     setQuizState("welcome");
   }
 
+  /* Just record the selected answer — no reveal, no scoring yet */
   const handleAnswerClick = useCallback(
     (index) => {
-      if (answerRevealed) return;
-
       setSelectedAnswer(index);
-      setAnswerRevealed(true);
-
-      const isCorrect = index === currentQuizData[currentQuestion].correct;
-
-      if (isCorrect) {
-        setScore((prev) => prev + 1);
-        setStreak((prev) => {
-          const next = prev + 1;
-          setBestStreak((best) => Math.max(best, next));
-          return next;
-        });
-      } else {
-        setStreak(0);
-      }
-
-      // Auto-advance after showing feedback
-      setTimeout(async () => {
-        if (currentQuestion + 1 < currentQuizData.length) {
-          setCurrentQuestion((prev) => prev + 1);
-          setSelectedAnswer(null);
-          setAnswerRevealed(false);
-          setQuestionKey((prev) => prev + 1);
-        } else {
-          const finalScore = score + (isCorrect ? 1 : 0);
-          const finalBestStreak = Math.max(bestStreak, isCorrect ? streak + 1 : streak);
-          setQuizState("results");
-          if (finalScore >= Math.ceil(currentQuizData.length * 0.6)) {
-            setShowConfetti(true);
-          }
-          // Save to Firestore
-          if (user) {
-            const result = getResultSummary(finalScore, currentQuizData.length);
-            await saveQuizResult(user.id, {
-              score: finalScore,
-              total: currentQuizData.length,
-              percentage: result.percentage,
-              level: result.level,
-              bestStreak: finalBestStreak,
-            });
-            await loadUserStats(user);
-          }
-        }
-      }, 1200);
     },
-    [answerRevealed, currentQuestion, score, user, bestStreak, streak]
+    []
   );
+
+  /* Move to the next question (records the answer) */
+  function handleNextQuestion() {
+    if (selectedAnswer === null) return;
+    setUserAnswers((prev) => [...prev, selectedAnswer]);
+    setSelectedAnswer(null);
+    setCurrentQuestion((prev) => prev + 1);
+    setQuestionKey((prev) => prev + 1);
+  }
+
+  /* Finish quiz: record last answer, compute score, go to results */
+  async function handleFinishQuiz() {
+    if (selectedAnswer === null) return;
+    const allAnswers = [...userAnswers, selectedAnswer];
+    setUserAnswers(allAnswers);
+
+    // Calculate score & streaks from all answers
+    let finalScore = 0;
+    let currentStreak = 0;
+    let maxStreak = 0;
+    allAnswers.forEach((ans, i) => {
+      if (ans === currentQuizData[i].correct) {
+        finalScore++;
+        currentStreak++;
+        maxStreak = Math.max(maxStreak, currentStreak);
+      } else {
+        currentStreak = 0;
+      }
+    });
+
+    setScore(finalScore);
+    setBestStreak(maxStreak);
+    setQuizState("results");
+
+    if (finalScore >= Math.ceil(currentQuizData.length * 0.6)) {
+      setShowConfetti(true);
+    }
+
+    // Save to Firestore
+    if (user) {
+      const result = getResultSummary(finalScore, currentQuizData.length);
+      await saveQuizResult(user.id, {
+        score: finalScore,
+        total: currentQuizData.length,
+        percentage: result.percentage,
+        level: result.level,
+        bestStreak: maxStreak,
+      });
+      await loadUserStats(user);
+    }
+  }
 
   async function sendResultsToDiscord() {
     if (!user || !webhookConfigured) {
@@ -624,7 +672,7 @@ export default function App() {
     const result = getResultSummary(score, currentQuizData.length);
 
     const payload = {
-      username: "English Quiz Bot",
+      username: "Marley",
       embeds: [
         {
           title: `${result.emoji} Quiz Results: ${user.username}`,
@@ -649,7 +697,7 @@ export default function App() {
             },
           ],
           footer: {
-            text: "Try the quiz yourself! \u{1F60E}",
+            text: "Your english Mam",
           },
           timestamp: new Date().toISOString(),
         },
@@ -681,6 +729,7 @@ export default function App() {
     setQuestionKey(0);
     setShowConfetti(false);
     setCurrentQuizId(null);
+    setUserAnswers([]);
   }
 
   function handleBackToDashboard() {
@@ -693,6 +742,7 @@ export default function App() {
     setAnswerRevealed(false);
     setQuestionKey(0);
     setCurrentQuizId(null);
+    setUserAnswers([]);
   }
 
   /* ─── Loading State ─── */
@@ -766,7 +816,8 @@ export default function App() {
   /* ─── Quiz State ─── */
   if (quizState === "quiz" && currentQuizData) {
     const question = currentQuizData[currentQuestion];
-    const progress = ((currentQuestion + (answerRevealed ? 1 : 0)) / currentQuizData.length) * 100;
+    const progress = ((currentQuestion + (selectedAnswer !== null ? 1 : 0)) / currentQuizData.length) * 100;
+    const isLastQuestion = currentQuestion + 1 === currentQuizData.length;
 
     return (
       <main className="page-shell">
@@ -802,12 +853,9 @@ export default function App() {
             <p className="eyebrow">
               Question {currentQuestion + 1} / {currentQuizData.length}
             </p>
-            {streak >= 2 && (
-              <div className="streak-badge" key={streak}>
-                <span className="fire">{"\u{1F525}"}</span>
-                {streak} streak!
-              </div>
-            )}
+            <span className="quiz-footer__quiz-name">
+              {AVAILABLE_QUIZZES.find(q => q.id === currentQuizId)?.title ?? "Quiz"}
+            </span>
           </div>
 
           <div className="question-enter" key={questionKey}>
@@ -816,14 +864,8 @@ export default function App() {
             <div className="quiz-options">
               {question.options.map((option, index) => {
                 let optionClass = "quiz-option";
-                if (answerRevealed) {
-                  if (index === question.correct) {
-                    optionClass += " quiz-option--correct";
-                  } else if (index === selectedAnswer) {
-                    optionClass += " quiz-option--wrong";
-                  } else {
-                    optionClass += " quiz-option--disabled";
-                  }
+                if (selectedAnswer === index) {
+                  optionClass += " quiz-option--selected";
                 }
 
                 return (
@@ -832,7 +874,6 @@ export default function App() {
                     type="button"
                     className={optionClass}
                     onClick={() => handleAnswerClick(index)}
-                    disabled={answerRevealed}
                   >
                     <span className="quiz-option__label">
                       {OPTION_LETTERS[index]}
@@ -842,41 +883,106 @@ export default function App() {
                 );
               })}
             </div>
-
-            {answerRevealed && (
-              <div
-                className={`feedback-message ${
-                  selectedAnswer === question.correct
-                    ? "feedback-message--correct"
-                    : "feedback-message--wrong"
-                }`}
-              >
-                {selectedAnswer === question.correct ? (
-                  <>
-                    <CheckIcon className="icon" />
-                    <span>
-                      Correct! {question.explanation}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <ErrorIcon className="icon" />
-                    <span>
-                      Not quite. {question.explanation}
-                    </span>
-                  </>
-                )}
-              </div>
-            )}
           </div>
 
           <div className="quiz-footer">
-            <span>
-              Score: {score}/{currentQuestion + (answerRevealed ? 1 : 0)}
+            <span className="quiz-footer__progress-text">
+              {currentQuestion + 1} of {currentQuizData.length}
             </span>
-            <span className="quiz-footer__quiz-name">
-              {AVAILABLE_QUIZZES.find(q => q.id === currentQuizId)?.title ?? "Quiz"}
+            {isLastQuestion ? (
+              <button
+                type="button"
+                className="button button--success quiz-next-btn"
+                onClick={handleFinishQuiz}
+                disabled={selectedAnswer === null}
+              >
+                Finish Quiz
+                <CheckIcon className="icon" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="button button--primary quiz-next-btn"
+                onClick={handleNextQuestion}
+                disabled={selectedAnswer === null}
+              >
+                Next
+                <ArrowRightIcon className="icon" />
+              </button>
+            )}
+          </div>
+        </section>
+      </main>
+    );
+  }
+
+  /* ─── Review State (dedicated page) ─── */
+  if (quizState === "review" && currentQuizData) {
+    return (
+      <main className="page-shell">
+        <FloatingParticles />
+        <section className="card review-card">
+          <div className="quiz-topbar">
+            <button
+              type="button"
+              className="button button--ghost quiz-back-btn"
+              onClick={() => setQuizState("results")}
+            >
+              <ArrowLeftIcon className="icon" />
+              Results
+            </button>
+            <span className="quiz-topbar__user" style={{ fontWeight: 700, color: "var(--dc-text-primary)" }}>
+              {AVAILABLE_QUIZZES.find(q => q.id === currentQuizId)?.title ?? "Quiz"} — Review
             </span>
+          </div>
+
+          <div className="review-summary">
+            <span className="review-summary__score">
+              {score} / {currentQuizData.length} correct
+            </span>
+          </div>
+
+          <div className="review-list">
+            {currentQuizData.map((q, i) => {
+              const userAns = userAnswers[i];
+              const isCorrect = userAns === q.correct;
+              return (
+                <div key={i} className={`review-item ${isCorrect ? "review-item--correct" : "review-item--wrong"}`}>
+                  <div className="review-item__header">
+                    <span className="review-item__number">Q{i + 1}</span>
+                    <span className={`review-item__badge ${isCorrect ? "review-item__badge--correct" : "review-item__badge--wrong"}`}>
+                      {isCorrect ? "Correct" : "Incorrect"}
+                    </span>
+                  </div>
+                  <p className="review-item__question">{q.question}</p>
+                  <div className="review-item__answers">
+                    {q.options.map((opt, j) => {
+                      let cls = "review-option";
+                      if (j === q.correct) cls += " review-option--correct";
+                      if (j === userAns && j !== q.correct) cls += " review-option--wrong";
+                      return (
+                        <div key={j} className={cls}>
+                          <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
+                          <span>{opt}</span>
+                          {j === q.correct && <CheckIcon className="icon review-option__icon" />}
+                          {j === userAns && j !== q.correct && <ErrorIcon className="icon review-option__icon" />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="review-item__explanation">
+                    <strong>{"\u{1F4A1}"} Explanation:</strong> {q.explanation}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="actions" style={{ justifyContent: "center", marginTop: "1.5rem" }}>
+            <button type="button" className="button button--primary" onClick={resetQuiz}>
+              <ArrowLeftIcon className="icon" />
+              Back to Dashboard
+            </button>
           </div>
         </section>
       </main>
@@ -931,25 +1037,35 @@ export default function App() {
             </div>
           )}
 
-          <div className="actions" style={{ justifyContent: "center" }}>
-            <button
-              type="button"
-              className="button button--discord"
-              onClick={sendResultsToDiscord}
-              disabled={webhookStatus === "sending" || !webhookConfigured}
-            >
-              {webhookStatus === "sending" ? (
-                <>
-                  <SpinnerIcon className="icon icon--spin" />
-                  Sending...
-                </>
-              ) : (
-                <>
-                  <DiscordLogo />
-                  Share to Discord
-                </>
-              )}
-            </button>
+          <div className="actions" style={{ justifyContent: "center", flexDirection: "column", alignItems: "center", gap: "0.6rem" }}>
+            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", justifyContent: "center" }}>
+              <button
+                type="button"
+                className="button button--discord"
+                onClick={sendResultsToDiscord}
+                disabled={webhookStatus === "sending" || !webhookConfigured}
+              >
+                {webhookStatus === "sending" ? (
+                  <>
+                    <SpinnerIcon className="icon icon--spin" />
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <DiscordLogo />
+                    Share to Discord
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                className="button button--primary"
+                onClick={() => setQuizState("review")}
+              >
+                {"\u{1F50D}"} Review Answers
+              </button>
+            </div>
 
             <button
               type="button"

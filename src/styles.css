@@ -535,6 +535,22 @@ code {
   opacity: 0.5;
 }
 
+/* Selected (during quiz, before submission) */
+.quiz-option--selected {
+  background: rgba(88, 101, 242, 0.18) !important;
+  border-color: var(--dc-blurple) !important;
+}
+
+.quiz-option--selected::before {
+  background: var(--dc-blurple) !important;
+  opacity: 1 !important;
+}
+
+.quiz-option--selected .quiz-option__label {
+  background: var(--dc-blurple);
+  color: #fff;
+}
+
 /* Option labels */
 .quiz-option__label {
   display: inline-flex;
@@ -1436,5 +1452,209 @@ code {
   .activity-item {
     flex-wrap: wrap;
     gap: 0.5rem;
+  }
+}
+
+/* ─── Quiz Next/Finish Button ─── */
+.quiz-next-btn {
+  min-width: 120px;
+}
+
+.quiz-footer__progress-text {
+  color: var(--dc-text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+/* ─── Review Page ─── */
+.review-card {
+  max-width: 800px;
+  padding: 2rem;
+  width: min(100%, 800px);
+  animation: cardSlideIn 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.review-summary {
+  text-align: center;
+  padding: 1rem 0 1.5rem;
+  border-bottom: 1px solid var(--dc-border);
+  margin-bottom: 1.5rem;
+}
+
+.review-summary__score {
+  font-family: "Space Grotesk", "Inter", sans-serif;
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--dc-text-primary);
+}
+
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.review-item {
+  background: var(--dc-bg-secondary);
+  border: 1px solid var(--dc-border);
+  border-radius: var(--dc-radius-lg);
+  padding: 1.25rem 1.5rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.review-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+}
+
+.review-item--correct::before {
+  background: var(--dc-green);
+}
+
+.review-item--wrong::before {
+  background: var(--dc-red);
+}
+
+.review-item__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.6rem;
+}
+
+.review-item__number {
+  font-family: "Space Grotesk", "Inter", sans-serif;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: var(--dc-text-muted);
+}
+
+.review-item__badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.review-item__badge--correct {
+  background: rgba(35, 165, 89, 0.15);
+  color: #57f287;
+  border: 1px solid rgba(35, 165, 89, 0.25);
+}
+
+.review-item__badge--wrong {
+  background: rgba(218, 55, 60, 0.15);
+  color: #f47b67;
+  border: 1px solid rgba(218, 55, 60, 0.25);
+}
+
+.review-item__question {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--dc-text-primary);
+  margin: 0 0 0.85rem;
+  line-height: 1.5;
+}
+
+.review-item__answers {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.85rem;
+}
+
+.review-option {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 0.85rem;
+  border-radius: var(--dc-radius);
+  font-size: 0.88rem;
+  color: var(--dc-text-secondary);
+  background: var(--dc-bg-tertiary);
+  border: 1px solid transparent;
+  transition: background var(--dc-transition);
+}
+
+.review-option--correct {
+  background: rgba(35, 165, 89, 0.12);
+  border-color: rgba(35, 165, 89, 0.25);
+  color: #57f287;
+  font-weight: 600;
+}
+
+.review-option--wrong {
+  background: rgba(218, 55, 60, 0.12);
+  border-color: rgba(218, 55, 60, 0.25);
+  color: #f47b67;
+  font-weight: 600;
+}
+
+.review-option__letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--dc-bg-accent);
+  border-radius: 5px;
+  width: 1.4rem;
+  height: 1.4rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  color: var(--dc-text-muted);
+}
+
+.review-option--correct .review-option__letter {
+  background: var(--dc-green);
+  color: #fff;
+}
+
+.review-option--wrong .review-option__letter {
+  background: var(--dc-red);
+  color: #fff;
+}
+
+.review-option__icon {
+  margin-left: auto;
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.review-item__explanation {
+  background: var(--dc-bg-floating);
+  border: 1px solid var(--dc-border);
+  border-radius: var(--dc-radius);
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  color: var(--dc-text-secondary);
+  line-height: 1.55;
+}
+
+.review-item__explanation strong {
+  color: var(--dc-yellow);
+  margin-right: 0.3rem;
+}
+
+@media (max-width: 640px) {
+  .review-card {
+    padding: 1.25rem;
+  }
+
+  .review-item {
+    padding: 1rem;
+  }
+
+  .review-option {
+    font-size: 0.82rem;
+    padding: 0.45rem 0.65rem;
   }
 }
