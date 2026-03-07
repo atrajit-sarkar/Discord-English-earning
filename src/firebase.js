@@ -40,36 +40,47 @@ export async function getUserProgress(discordUserId) {
 
 /**
  * Create or update the user profile inside English/{discordUserId}.
+ * Uses setDoc with merge to do it in a SINGLE Firestore call (no read needed).
  * Called on every Discord login so the profile stays current.
  */
 export async function upsertUserProfile(user) {
   try {
     const ref = doc(db, "English", user.id);
-    const snap = await getDoc(ref);
-
-    if (snap.exists()) {
-      // Only update profile fields, keep history intact
-      await updateDoc(ref, {
-        username: user.username,
-        avatar: user.avatar,
-        lastLogin: serverTimestamp(),
-      });
-    } else {
-      // First time — create full document
-      await setDoc(ref, {
+    await setDoc(
+      ref,
+      {
         discordId: user.id,
         username: user.username,
         avatar: user.avatar,
-        createdAt: serverTimestamp(),
         lastLogin: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.error("upsertUserProfile:", err);
+  }
+}
+
+/**
+ * Ensure default stats fields exist for a brand-new user.
+ * Called once after first login — uses merge so it won't overwrite existing data.
+ */
+export async function ensureUserDefaults(discordUserId) {
+  try {
+    const ref = doc(db, "English", discordUserId);
+    await setDoc(
+      ref,
+      {
         totalAttempts: 0,
         bestScore: 0,
         bestStreak: 0,
         quizHistory: [],
-      });
-    }
+        createdAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
   } catch (err) {
-    console.error("upsertUserProfile:", err);
+    console.error("ensureUserDefaults:", err);
   }
 }
 

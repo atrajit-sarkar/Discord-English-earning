@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { getUserProgress, upsertUserProfile, saveQuizResult } from "./firebase";
+import { getUserProgress, upsertUserProfile, ensureUserDefaults, saveQuizResult } from "./firebase";
 
 const DISCORD_CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID?.trim() ?? "";
 const DISCORD_WEBHOOK_URL =
@@ -126,6 +126,21 @@ function ArrowRightIcon(props) {
     <svg viewBox="0 0 24 24" aria-hidden="true" {...props}>
       <path
         d="m5 12h14m-5-5 5 5-5 5"
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
+
+function ArrowLeftIcon(props) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" {...props}>
+      <path
+        d="m19 12H5m5-5-5 5 5 5"
         fill="none"
         stroke="currentColor"
         strokeLinecap="round"
@@ -492,19 +507,20 @@ export default function App() {
           setUser(u);
           writeStoredUser(u);
           setAuthError("");
-          // Go straight to quiz after fresh Discord login
           setQuizState("dashboard");
-          // Sync profile & load stats from Firestore
-          await upsertUserProfile(u);
-          await loadUserStats(u);
+          setLoadingAuth(false);
+          // Fire-and-forget: sync profile & defaults to Firestore (don't block UI)
+          upsertUserProfile(u).then(() => ensureUserDefaults(u.id));
+          // Load stats in background
+          loadUserStats(u);
         })
         .catch(() => {
           if (ignore) return;
           setAuthError("Could not load your Discord profile.");
+          setLoadingAuth(false);
         })
         .finally(() => {
           clearStoredOauthResponse();
-          if (!ignore) setLoadingAuth(false);
         });
 
       return () => { ignore = true; };
@@ -667,6 +683,18 @@ export default function App() {
     setCurrentQuizId(null);
   }
 
+  function handleBackToDashboard() {
+    setCurrentQuestion(0);
+    setScore(0);
+    setStreak(0);
+    setBestStreak(0);
+    setQuizState("dashboard");
+    setSelectedAnswer(null);
+    setAnswerRevealed(false);
+    setQuestionKey(0);
+    setCurrentQuizId(null);
+  }
+
   /* ─── Loading State ─── */
   if (loadingAuth) {
     return (
@@ -744,6 +772,25 @@ export default function App() {
       <main className="page-shell">
         <FloatingParticles />
         <section className="card quiz-card">
+          <div className="quiz-topbar">
+            <button
+              type="button"
+              className="button button--ghost quiz-back-btn"
+              onClick={handleBackToDashboard}
+            >
+              <ArrowLeftIcon className="icon" />
+              Dashboard
+            </button>
+            <div className="quiz-topbar__info">
+              {user && (
+                <span className="quiz-topbar__user">
+                  <img src={user.avatar} alt="" className="quiz-topbar__avatar" />
+                  {user.username}
+                </span>
+              )}
+            </div>
+          </div>
+
           <div className="quiz-progress">
             <div
               className="quiz-progress__bar"
@@ -827,21 +874,9 @@ export default function App() {
             <span>
               Score: {score}/{currentQuestion + (answerRevealed ? 1 : 0)}
             </span>
-            {user && (
-              <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-                <img
-                  src={user.avatar}
-                  alt=""
-                  style={{
-                    width: 20,
-                    height: 20,
-                    borderRadius: "50%",
-                    border: "1.5px solid var(--dc-blurple)",
-                  }}
-                />
-                {user.username}
-              </span>
-            )}
+            <span className="quiz-footer__quiz-name">
+              {AVAILABLE_QUIZZES.find(q => q.id === currentQuizId)?.title ?? "Quiz"}
+            </span>
           </div>
         </section>
       </main>
@@ -921,7 +956,8 @@ export default function App() {
               className="button button--ghost"
               onClick={resetQuiz}
             >
-              Play again
+              <ArrowLeftIcon className="icon" />
+              Back to Dashboard
             </button>
           </div>
 
@@ -951,17 +987,14 @@ export default function App() {
         <div className="dashboard-container">
           <header className="dashboard-header">
             <div className="dashboard-header__content">
-              <div>
-                <p className="eyebrow">{"\u{1F44B}"} Welcome back</p>
-                <h1 className="dashboard-title">{user.username}</h1>
+              <div className="dashboard-header__left">
+                <img src={user.avatar} alt="" className="dashboard-avatar" />
+                <div>
+                  <p className="eyebrow">{"\u{1F44B}"} Welcome back</p>
+                  <h1 className="dashboard-title">{user.username}</h1>
+                </div>
               </div>
               <div className="user-panel">
-                <div className="user-chip">
-                  <img src={user.avatar} alt="" className="avatar" />
-                  <span>
-                    {"\u{2B50}"} {userStats?.totalAttempts ? `Attempts: ${userStats.totalAttempts}` : "New Player"}
-                  </span>
-                </div>
                 <button type="button" className="button button--ghost" onClick={handleLogout} style={{ fontSize: "0.8rem", height: "2.2rem", padding: "0 0.9rem", minHeight: "auto" }}>
                   Logout
                 </button>
@@ -969,16 +1002,61 @@ export default function App() {
             </div>
           </header>
 
+          {/* Stats Cards Row */}
+          <section className="stats-row">
+            <div className="stat-card">
+              <div className="stat-card__icon stat-card__icon--blue">{"\u{1F3AF}"}</div>
+              <div className="stat-card__info">
+                <span className="stat-card__value">{userStats?.totalAttempts ?? 0}</span>
+                <span className="stat-card__label">Quizzes Taken</span>
+              </div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-card__icon stat-card__icon--green">{"\u{1F451}"}</div>
+              <div className="stat-card__info">
+                <span className="stat-card__value">{userStats?.bestScore ?? 0}</span>
+                <span className="stat-card__label">Best Score</span>
+              </div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-card__icon stat-card__icon--orange">{"\u{1F525}"}</div>
+              <div className="stat-card__info">
+                <span className="stat-card__value">{userStats?.bestStreak ?? 0}</span>
+                <span className="stat-card__label">Best Streak</span>
+              </div>
+            </div>
+            <div className="stat-card">
+              <div className="stat-card__icon stat-card__icon--purple">{"\u{1F4CA}"}</div>
+              <div className="stat-card__info">
+                <span className="stat-card__value">
+                  {userStats?.quizHistory?.length
+                    ? `${Math.round(userStats.quizHistory.reduce((s, h) => s + (h.percentage ?? 0), 0) / userStats.quizHistory.length)}%`
+                    : "—"}
+                </span>
+                <span className="stat-card__label">Avg Score</span>
+              </div>
+            </div>
+          </section>
+
           <section className="dashboard-content">
             <h2 className="dashboard-section-title">Available Quizzes</h2>
             <div className="quiz-grid">
               {AVAILABLE_QUIZZES.map((quiz) => (
                 <div key={quiz.id} className="dashboard-quiz-card" onClick={() => {
                   setCurrentQuizId(quiz.id);
+                  setCurrentQuestion(0);
+                  setScore(0);
+                  setStreak(0);
+                  setBestStreak(0);
+                  setSelectedAnswer(null);
+                  setAnswerRevealed(false);
+                  setQuestionKey(0);
                   setQuizState("quiz");
                 }}>
                   <div className="quiz-card__image-wrapper">
-                    <img src={quiz.image} alt={quiz.title} className="quiz-card__image" />
+                    <div className="quiz-card__image-placeholder">
+                      <span className="quiz-card__image-emoji">{quiz.level === "Advanced" ? "\u{1F4BC}" : "\u{1F4AC}"}</span>
+                    </div>
                     {quiz.isNew && <span className="quiz-card__badge">New</span>}
                   </div>
                   <div className="quiz-card__body">
@@ -987,12 +1065,40 @@ export default function App() {
                     <div className="quiz-card__meta">
                       <span className="meta-tag">{"\u{1F4D8}"} {quiz.level}</span>
                       <span className="meta-tag">{"\u{23F1}\u{FE0F}"} {quiz.duration}</span>
+                      <span className="meta-tag">{"\u{2753}"} {QUIZZES[quiz.id]?.length ?? 0} Qs</span>
                     </div>
+                  </div>
+                  <div className="quiz-card__cta">
+                    <span>Start Quiz</span>
+                    <ArrowRightIcon className="icon" />
                   </div>
                 </div>
               ))}
             </div>
           </section>
+
+          {/* Recent Activity */}
+          {userStats?.quizHistory?.length > 0 && (
+            <section className="dashboard-content">
+              <h2 className="dashboard-section-title">Recent Activity</h2>
+              <div className="activity-list">
+                {userStats.quizHistory.slice(-5).reverse().map((h, i) => (
+                  <div key={i} className="activity-item">
+                    <div className="activity-item__score">
+                      <strong>{h.score}/{h.total}</strong>
+                      <span>({h.percentage}%)</span>
+                    </div>
+                    <span className={`level-badge level-badge--${h.level?.toLowerCase()}`} style={{ fontSize: "0.7rem", padding: "0.15rem 0.55rem", marginTop: 0 }}>
+                      {h.level}
+                    </span>
+                    <span className="activity-item__date">
+                      {h.completedAt ? new Date(h.completedAt).toLocaleDateString() : "—"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       </main>
     );
