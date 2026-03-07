@@ -784,6 +784,124 @@ code {
   fill: currentColor;
 }
 
+/* ─── Login Page ─── */
+.login-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 2rem;
+  text-align: center;
+  position: relative;
+}
+
+.login-card {
+  background: var(--dc-bg-primary);
+  border: 1px solid var(--dc-border);
+  border-radius: var(--dc-radius-lg);
+  box-shadow: var(--dc-shadow);
+  padding: 3rem 2.5rem;
+  max-width: 420px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.25rem;
+  animation: cardSlideIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: 1;
+}
+
+.login-card__logo {
+  width: 4.5rem;
+  height: 4.5rem;
+  background: var(--dc-blurple);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.25rem;
+  box-shadow: 0 0 30px rgba(88, 101, 242, 0.35);
+}
+
+.login-card__logo .discord-logo {
+  width: 2.5rem;
+  height: 2.5rem;
+  fill: #fff;
+}
+
+.login-card__title {
+  font-family: "Space Grotesk", "Inter", sans-serif;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--dc-text-primary);
+  line-height: 1.2;
+}
+
+.login-card__subtitle {
+  color: var(--dc-text-secondary);
+  font-size: 0.92rem;
+  line-height: 1.6;
+  max-width: 32ch;
+}
+
+.login-card__divider {
+  width: 100%;
+  height: 1px;
+  background: var(--dc-border);
+  margin: 0.25rem 0;
+}
+
+.login-card .button--discord {
+  width: 100%;
+  min-height: 3rem;
+  font-size: 0.95rem;
+  border-radius: var(--dc-radius);
+  gap: 0.6rem;
+}
+
+.login-card .button--discord .discord-logo {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+
+.login-card__features {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  width: 100%;
+  margin-top: 0.25rem;
+}
+
+.login-card__feature {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.82rem;
+  color: var(--dc-text-muted);
+  text-align: left;
+}
+
+.login-card__feature-icon {
+  flex-shrink: 0;
+  width: 1.5rem;
+  height: 1.5rem;
+  background: var(--dc-bg-accent);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+}
+
+@media (max-width: 640px) {
+  .login-card {
+    padding: 2rem 1.5rem;
+    border-radius: var(--dc-radius);
+  }
+}
+
 /* ─── Animations ─── */
 @keyframes spin {
   to {

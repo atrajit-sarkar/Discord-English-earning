@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { getUserProgress, upsertUserProfile, saveQuizResult } from "./firebase";
 
 const DISCORD_CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID?.trim() ?? "";
 const DISCORD_WEBHOOK_URL =
   import.meta.env.VITE_DISCORD_WEBHOOK_URL?.trim() ?? "";
 const REDIRECT_URI = `${window.location.origin}${window.location.pathname}`;
 const OAUTH_STORAGE_KEY = "discord-oauth-response";
+const USER_STORAGE_KEY = "discord-user-profile";
 
 const questions = [
   {
@@ -358,9 +360,32 @@ function clearStoredOauthResponse() {
   }
 }
 
+/* ─── Persistent user profile (localStorage) ─── */
+function readStoredUser() {
+  try {
+    const val = window.localStorage.getItem(USER_STORAGE_KEY);
+    return val ? JSON.parse(val) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredUser(user) {
+  try {
+    window.localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
+  } catch {}
+}
+
+function clearStoredUser() {
+  try {
+    window.localStorage.removeItem(USER_STORAGE_KEY);
+  } catch {}
+}
+
 /* ─── Main App ─── */
 export default function App() {
   const [user, setUser] = useState(null);
+  const [userStats, setUserStats] = useState(null);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [authError, setAuthError] = useState("");
   const [quizState, setQuizState] = useState("welcome");
@@ -377,7 +402,14 @@ export default function App() {
   const discordConfigured = !isPlaceholder(DISCORD_CLIENT_ID);
   const webhookConfigured = !isPlaceholder(DISCORD_WEBHOOK_URL);
 
+  /* Load Firestore stats for a given user */
+  async function loadUserStats(u) {
+    const progress = await getUserProgress(u.id);
+    if (progress) setUserStats(progress);
+  }
+
   useEffect(() => {
+    /* 1. Check for an OAuth callback in the URL hash */
     const fragment = new URLSearchParams(window.location.hash.slice(1));
     const hashPayload = {
       accessToken: fragment.get("access_token"),
@@ -415,48 +447,57 @@ export default function App() {
       return;
     }
 
-    if (!accessToken || !tokenType) {
-      clearStoredOauthResponse();
-      setLoadingAuth(false);
-      return;
+    /* 2. If we have a fresh token from the hash, fetch profile */
+    if (accessToken && tokenType) {
+      let ignore = false;
+
+      fetch("https://discord.com/api/users/@me", {
+        headers: { authorization: `${tokenType} ${accessToken}` },
+      })
+        .then(async (response) => {
+          if (!response.ok) throw new Error("Failed to fetch Discord profile.");
+          return response.json();
+        })
+        .then(async (profile) => {
+          if (ignore) return;
+          const u = {
+            id: profile.id,
+            username: profile.username,
+            avatar: profile.avatar
+              ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png`
+              : "https://cdn.discordapp.com/embed/avatars/0.png",
+          };
+          setUser(u);
+          writeStoredUser(u);
+          setAuthError("");
+          // Go straight to quiz after fresh Discord login
+          setQuizState("welcome");
+          // Sync profile & load stats from Firestore
+          await upsertUserProfile(u);
+          await loadUserStats(u);
+        })
+        .catch(() => {
+          if (ignore) return;
+          setAuthError("Could not load your Discord profile.");
+        })
+        .finally(() => {
+          clearStoredOauthResponse();
+          if (!ignore) setLoadingAuth(false);
+        });
+
+      return () => { ignore = true; };
     }
 
-    let ignore = false;
-
-    fetch("https://discord.com/api/users/@me", {
-      headers: {
-        authorization: `${tokenType} ${accessToken}`,
-      },
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error("Failed to fetch Discord profile.");
-        }
-        return response.json();
-      })
-      .then((profile) => {
-        if (ignore) return;
-        setUser({
-          id: profile.id,
-          username: profile.username,
-          avatar: profile.avatar
-            ? `https://cdn.discordapp.com/avatars/${profile.id}/${profile.avatar}.png`
-            : "https://cdn.discordapp.com/embed/avatars/0.png",
-        });
-        setAuthError("");
-      })
-      .catch(() => {
-        if (ignore) return;
-        setAuthError("Could not load your Discord profile.");
-      })
-      .finally(() => {
-        clearStoredOauthResponse();
-        if (!ignore) setLoadingAuth(false);
-      });
-
-    return () => {
-      ignore = true;
-    };
+    /* 3. No fresh token — try restoring from localStorage */
+    clearStoredOauthResponse();
+    const savedUser = readStoredUser();
+    if (savedUser?.id) {
+      setUser(savedUser);
+      loadUserStats(savedUser).finally(() => setLoadingAuth(false));
+    } else {
+      /* 4. No saved user — show login page (no auto-redirect) */
+      setLoadingAuth(false);
+    }
   }, []);
 
   function handleDiscordLogin() {
@@ -474,6 +515,13 @@ export default function App() {
       "&response_type=token&scope=identify";
 
     window.location.href = oauthUrl;
+  }
+
+  function handleLogout() {
+    clearStoredUser();
+    setUser(null);
+    setUserStats(null);
+    setQuizState("welcome");
   }
 
   const handleAnswerClick = useCallback(
@@ -497,21 +545,35 @@ export default function App() {
       }
 
       // Auto-advance after showing feedback
-      setTimeout(() => {
+      setTimeout(async () => {
         if (currentQuestion + 1 < questions.length) {
           setCurrentQuestion((prev) => prev + 1);
           setSelectedAnswer(null);
           setAnswerRevealed(false);
           setQuestionKey((prev) => prev + 1);
         } else {
+          const finalScore = score + (isCorrect ? 1 : 0);
+          const finalBestStreak = Math.max(bestStreak, isCorrect ? streak + 1 : streak);
           setQuizState("results");
-          if (score + (isCorrect ? 1 : 0) >= Math.ceil(questions.length * 0.6)) {
+          if (finalScore >= Math.ceil(questions.length * 0.6)) {
             setShowConfetti(true);
+          }
+          // Save to Firestore
+          if (user) {
+            const result = getResultSummary(finalScore);
+            await saveQuizResult(user.id, {
+              score: finalScore,
+              total: questions.length,
+              percentage: result.percentage,
+              level: result.level,
+              bestStreak: finalBestStreak,
+            });
+            await loadUserStats(user);
           }
         }
       }, 1200);
     },
-    [answerRevealed, currentQuestion, score]
+    [answerRevealed, currentQuestion, score, user, bestStreak, streak]
   );
 
   async function sendResultsToDiscord() {
@@ -589,8 +651,63 @@ export default function App() {
         <FloatingParticles />
         <section className="card card--compact status-card">
           <SpinnerIcon className="icon icon--spin icon--large" />
-          <p>Connecting to Discord...</p>
+          <p>Logging you in...</p>
         </section>
+      </main>
+    );
+  }
+
+  /* ─── Login Page (no user) ─── */
+  if (!user) {
+    return (
+      <main className="login-page">
+        <FloatingParticles />
+        <div className="login-card">
+          <div className="login-card__logo">
+            <DiscordLogo />
+          </div>
+          <h1 className="login-card__title">English Quiz</h1>
+          <p className="login-card__subtitle">
+            Test your everyday English skills and track your progress with the community.
+          </p>
+
+          {authError && (
+            <div className="notice notice--error" style={{ width: "100%" }}>
+              <ErrorIcon className="icon" />
+              <span>{authError}</span>
+            </div>
+          )}
+
+          <div className="login-card__divider" />
+
+          <button
+            type="button"
+            className="button button--discord"
+            onClick={handleDiscordLogin}
+          >
+            <DiscordLogo />
+            Login with Discord
+          </button>
+
+          <div className="login-card__features">
+            <div className="login-card__feature">
+              <span className="login-card__feature-icon">{"\u{1F3AF}"}</span>
+              5 real-world English questions
+            </div>
+            <div className="login-card__feature">
+              <span className="login-card__feature-icon">{"\u{1F4CA}"}</span>
+              Track your score &amp; streaks
+            </div>
+            <div className="login-card__feature">
+              <span className="login-card__feature-icon">{"\u{2601}\uFE0F"}</span>
+              Progress saved to cloud
+            </div>
+            <div className="login-card__feature">
+              <span className="login-card__feature-icon">{"\u{1F4E2}"}</span>
+              Share results to Discord
+            </div>
+          </div>
+        </div>
       </main>
     );
   }
@@ -830,7 +947,7 @@ export default function App() {
               onClick={handleDiscordLogin}
             >
               <DiscordLogo />
-              Connect with Discord
+              Login with Discord
             </button>
           ) : (
             <div className="user-panel">
@@ -847,39 +964,95 @@ export default function App() {
                 Start Quiz
                 <ArrowRightIcon className="icon" />
               </button>
+
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={handleLogout}
+                style={{ fontSize: "0.8rem", minHeight: "2.2rem", padding: "0.35rem 0.9rem" }}
+              >
+                Logout
+              </button>
             </div>
           )}
         </div>
 
-        <aside className="setup-panel" aria-label="Setup checklist">
+        <aside className="setup-panel" aria-label="Your progress">
           <div className="setup-panel__header">
             <TrophyIcon className="icon icon--accent icon--large" />
             <div>
-              <h2>Setup Checklist</h2>
-              <p>Configure before deploying</p>
+              <h2>{user ? "Your Stats" : "Setup Checklist"}</h2>
+              <p>{user ? "Progress saved to cloud" : "Configure before deploying"}</p>
             </div>
           </div>
 
-          <ul className="setup-list">
-            <li className={discordConfigured ? "is-ready" : "is-missing"}>
-              <span className="setup-list__status" />
-              Discord Client ID
-            </li>
-            <li className={webhookConfigured ? "is-ready" : "is-missing"}>
-              <span className="setup-list__status" />
-              Discord Webhook URL
-            </li>
-            <li className="is-ready">
-              <span className="setup-list__status" />
-              Redirect URI (auto-generated)
-            </li>
-          </ul>
+          {user && userStats ? (
+            <>
+              <ul className="setup-list">
+                <li className="is-ready">
+                  <span className="setup-list__status" />
+                  Total attempts: <strong style={{ marginLeft: "auto" }}>{userStats.totalAttempts ?? 0}</strong>
+                </li>
+                <li className="is-ready">
+                  <span className="setup-list__status" />
+                  Best score: <strong style={{ marginLeft: "auto" }}>{userStats.bestScore ?? 0}/{questions.length}</strong>
+                </li>
+                <li className="is-ready">
+                  <span className="setup-list__status" />
+                  Best streak: <strong style={{ marginLeft: "auto" }}>{"\u{1F525}"} {userStats.bestStreak ?? 0}</strong>
+                </li>
+              </ul>
 
-          <div className="setup-note">
-            <strong>Redirect URIs</strong>
-            <code>http://localhost:5173/</code>
-            <code>{REDIRECT_URI}</code>
-          </div>
+              {userStats.quizHistory?.length > 0 && (
+                <div className="setup-note">
+                  <strong>Recent Attempts</strong>
+                  {userStats.quizHistory.slice(-3).reverse().map((h, i) => (
+                    <div key={i} style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      padding: "0.4rem 0.5rem", borderRadius: "6px",
+                      background: "var(--dc-bg-accent)", fontSize: "0.82rem"
+                    }}>
+                      <span>{h.score}/{h.total} ({h.percentage}%)</span>
+                      <span className={`level-badge level-badge--${h.level?.toLowerCase()}`}
+                        style={{ fontSize: "0.7rem", padding: "0.15rem 0.5rem", marginTop: 0 }}>
+                        {h.level}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : user && !userStats ? (
+            <ul className="setup-list">
+              <li className="is-ready">
+                <span className="setup-list__status" />
+                First time here — take the quiz!
+              </li>
+            </ul>
+          ) : (
+            <>
+              <ul className="setup-list">
+                <li className={discordConfigured ? "is-ready" : "is-missing"}>
+                  <span className="setup-list__status" />
+                  Discord Client ID
+                </li>
+                <li className={webhookConfigured ? "is-ready" : "is-missing"}>
+                  <span className="setup-list__status" />
+                  Discord Webhook URL
+                </li>
+                <li className="is-ready">
+                  <span className="setup-list__status" />
+                  Redirect URI (auto-generated)
+                </li>
+              </ul>
+
+              <div className="setup-note">
+                <strong>Redirect URIs</strong>
+                <code>http://localhost:5173/</code>
+                <code>{REDIRECT_URI}</code>
+              </div>
+            </>
+          )}
         </aside>
       </section>
     </main>
