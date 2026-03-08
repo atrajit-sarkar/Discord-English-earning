@@ -830,7 +830,8 @@ export default {
         // Build the review link URL
         const allowedOrigins = getAllowedOrigins(env.ALLOWED_ORIGINS);
         const siteOrigin = allowedOrigins.find(o => o.includes("github.io")) || allowedOrigins[0] || "";
-        const reviewLink = siteOrigin ? `${siteOrigin}/access-request.html?id=${requestId}` : `Review Request ID: ${requestId}`;
+        const basePath = env.SITE_BASE_PATH || "";
+        const reviewLink = siteOrigin ? `${siteOrigin}${basePath}/access-request.html?id=${requestId}` : `Review Request ID: ${requestId}`;
 
         // Send notification to admin channel
         const embed = {

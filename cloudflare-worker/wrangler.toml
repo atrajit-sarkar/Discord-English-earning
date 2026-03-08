@@ -3,5 +3,6 @@ main = "src/index.js"
 compatibility_date = "2026-03-08"
 
 [vars]
-ALLOWED_ORIGINS = "http://localhost:5173,https://atrajit-sarkar.github.io"
+ALLOWED_ORIGINS = "http://localhost:5173,http://localhost:5174,http://localhost:5175,https://atrajit-sarkar.github.io"
 FIREBASE_PROJECT_ID = "discord-en-jp-practice"
+SITE_BASE_PATH = "/Discord-English-earning"
