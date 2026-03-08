@@ -991,6 +991,8 @@ export default {
               method: "PUT",
               headers: {
                 Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
+                "Content-Type": "application/json",
+                "X-Audit-Log-Reason": "Access request approved via quiz app",
               },
             }
           );
@@ -998,11 +1000,11 @@ export default {
           if (!roleRes.ok && roleRes.status !== 204) {
             const errText = await roleRes.text();
             console.error("Failed to add role:", roleRes.status, errText);
-            return jsonResponse({ error: "Failed to grant role." }, 502, origin, env);
+            return jsonResponse({ error: `Failed to grant role. Discord: ${roleRes.status} - ${errText.slice(0, 200)}` }, 502, origin, env);
           }
         } catch (err) {
           console.error("Error adding role:", err);
-          return jsonResponse({ error: "Failed to grant role." }, 502, origin, env);
+          return jsonResponse({ error: "Failed to grant role: " + err.message }, 502, origin, env);
         }
 
         // Update request status
