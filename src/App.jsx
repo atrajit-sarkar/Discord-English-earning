@@ -433,7 +433,7 @@ function isPlaceholder(value) {
 
 function readStoredOauthResponse() {
   try {
-    const storedValue = window.sessionStorage.getItem(OAUTH_STORAGE_KEY);
+    const storedValue = window.localStorage.getItem(OAUTH_STORAGE_KEY);
     return storedValue ? JSON.parse(storedValue) : null;
   } catch {
     return null;
@@ -442,7 +442,7 @@ function readStoredOauthResponse() {
 
 function writeStoredOauthResponse(payload) {
   try {
-    window.sessionStorage.setItem(OAUTH_STORAGE_KEY, JSON.stringify(payload));
+    window.localStorage.setItem(OAUTH_STORAGE_KEY, JSON.stringify(payload));
   } catch {
     // Ignore storage failures.
   }
@@ -450,7 +450,7 @@ function writeStoredOauthResponse(payload) {
 
 function clearStoredOauthResponse() {
   try {
-    window.sessionStorage.removeItem(OAUTH_STORAGE_KEY);
+    window.localStorage.removeItem(OAUTH_STORAGE_KEY);
   } catch {
     // Ignore storage failures.
   }
@@ -579,6 +579,7 @@ export default function App() {
   const [fetchedCorrectAnswers, setFetchedCorrectAnswers] = useState([]);
   const [fetchedExplanations, setFetchedExplanations] = useState([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
 
   const discordConfigured = !isPlaceholder(DISCORD_CLIENT_ID);
   const relayConfigured = !isPlaceholder(DISCORD_RELAY_URL);
@@ -756,16 +757,14 @@ export default function App() {
         } catch {
           if (!isMountedRef.current) return;
           setAuthError("Could not load your Discord profile.");
-          finishLoading();
-        } finally {
           clearStoredOauthResponse();
+          finishLoading();
         }
 
         return;
       }
 
       /* 3. No fresh token — try restoring from localStorage */
-      clearStoredOauthResponse();
       const savedUser = readStoredUser();
 
       if (savedUser?.id) {
@@ -818,8 +817,10 @@ export default function App() {
     }
   }
 
+  const needsTurnstile = quizState === "quiz" || quizState === "evaluating" || quizState === "results";
+
   useEffect(() => {
-    if (!turnstileConfigured || quizState !== "results") {
+    if (!turnstileConfigured || !needsTurnstile) {
       setTurnstileToken("");
       setTurnstileError("");
       clearTurnstileWidget();
@@ -924,6 +925,7 @@ export default function App() {
 
   function handleLogout() {
     clearStoredUser();
+    clearStoredOauthResponse();
     setUser(null);
     setUserStats(null);
     setLoadingUserStats(false);
@@ -949,9 +951,16 @@ export default function App() {
 
   /* Finish quiz: submit answers to worker to get score and explanations */
   async function handleFinishQuiz() {
-    if (selectedAnswer === null) return;
-    const allAnswers = [...userAnswers, selectedAnswer];
-    setUserAnswers(allAnswers);
+    // On retry, userAnswers is already fully populated
+    const isRetry = submitError && userAnswers.length === currentQuizData.length;
+    let allAnswers;
+    if (isRetry) {
+      allAnswers = userAnswers;
+    } else {
+      if (selectedAnswer === null) return;
+      allAnswers = [...userAnswers, selectedAnswer];
+      setUserAnswers(allAnswers);
+    }
 
     if (!relayConfigured) {
       // Offline / no-relay fallback (will not have explanations or correct scoring)
@@ -962,12 +971,13 @@ export default function App() {
     }
 
     setIsSubmitting(true);
+    setSubmitError("");
     setQuizState("evaluating");
 
     try {
       const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === currentQuizId);
       const oauthData = readStoredOauthResponse();
-      const discordToken = oauthData?.access_token ?? "";
+      const discordToken = oauthData?.accessToken ?? "";
 
       const response = await fetch(DISCORD_RELAY_URL, {
         method: "POST",
@@ -1008,8 +1018,7 @@ export default function App() {
 
     } catch (error) {
       console.error(error);
-      setQuizState("dashboard");
-      // Could show an error toast here
+      setSubmitError(error.message || "Something went wrong. Please try again.");
     } finally {
       setIsSubmitting(false);
       if (turnstileConfigured) {
@@ -1035,7 +1044,7 @@ export default function App() {
     const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === currentQuizId);
     const quizTitle = quizMeta?.title ?? "Quiz";
     const oauthData = readStoredOauthResponse();
-    const discordToken = oauthData?.access_token ?? "";
+    const discordToken = oauthData?.accessToken ?? "";
 
     try {
       const response = await fetch(DISCORD_RELAY_URL, {
@@ -1092,6 +1101,7 @@ export default function App() {
     setUserAnswers([]);
     setFetchedCorrectAnswers([]);
     setFetchedExplanations([]);
+    setSubmitError("");
   }
 
   function handleBackToDashboard() {
@@ -1107,6 +1117,7 @@ export default function App() {
     setUserAnswers([]);
     setFetchedCorrectAnswers([]);
     setFetchedExplanations([]);
+    setSubmitError("");
   }
 
   function handleStartQuiz(quizId) {
@@ -1315,7 +1326,7 @@ export default function App() {
                 type="button"
                 className="button button--success quiz-next-btn"
                 onClick={handleFinishQuiz}
-                disabled={selectedAnswer === null || isSubmitting}
+                disabled={selectedAnswer === null || isSubmitting || (turnstileConfigured && !turnstileToken)}
               >
                 {isSubmitting ? "Evaluating..." : "Finish Quiz"}
                 {!isSubmitting && <CheckIcon className="icon" />}
@@ -1332,6 +1343,17 @@ export default function App() {
               </button>
             )}
           </div>
+          {turnstileConfigured && (
+            <div
+              ref={turnstileContainerRef}
+              style={{
+                width: "100%",
+                display: isLastQuestion ? "flex" : "none",
+                justifyContent: "center",
+                marginTop: "0.5rem",
+              }}
+            />
+          )}
         </section>
       </main>
     );
@@ -1343,8 +1365,26 @@ export default function App() {
       <main className="page-shell">
         <FloatingParticles />
         <section className="card card--compact status-card">
-          <SpinnerIcon className="icon icon--spin icon--large" />
-          <p>Evaluating your answers securely...</p>
+          {submitError ? (
+            <>
+              <ErrorIcon className="icon icon--large" style={{ color: "var(--dc-red)" }} />
+              <p style={{ color: "var(--dc-red)", fontWeight: 600 }}>Submission Failed</p>
+              <p style={{ fontSize: "0.85rem", color: "var(--dc-text-muted)", marginTop: "0.25rem" }}>{submitError}</p>
+              <div className="actions" style={{ marginTop: "1rem", gap: "0.75rem" }}>
+                <button type="button" className="button button--primary" onClick={handleFinishQuiz}>
+                  Retry
+                </button>
+                <button type="button" className="button button--ghost" onClick={resetQuiz}>
+                  Back to Dashboard
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <SpinnerIcon className="icon icon--spin icon--large" />
+              <p>Evaluating your answers securely...</p>
+            </>
+          )}
         </section>
       </main>
     );
