@@ -689,8 +689,56 @@ export default {
           results.roles = { error: err.message };
         }
 
-        // Try a direct role add test on a test user if provided
+        // Check channel permission overwrites
+        try {
+          const chanRes = await fetch(
+            `https://discord.com/api/v10/channels/${REQUIRED_CHANNEL_ID}`,
+            { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
+          );
+          if (chanRes.ok) {
+            const channel = await chanRes.json();
+            results.channel = {
+              id: channel.id,
+              name: channel.name,
+              type: channel.type,
+              overwrites: (channel.permission_overwrites || []).map(o => ({
+                id: o.id,
+                type: o.type,
+                allow: o.allow,
+                deny: o.deny,
+              })),
+            };
+            // Check if EN Learner role has VIEW_CHANNEL allow overwrite
+            const targetOverwrite = (channel.permission_overwrites || []).find(o => o.id === ACCESS_ROLE_ID);
+            results.channelTargetRoleOverwrite = targetOverwrite || "NONE - EN Learner role has no overwrite on this channel";
+          } else {
+            results.channel = { status: chanRes.status, error: await chanRes.text() };
+          }
+        } catch (err) {
+          results.channel = { error: err.message };
+        }
+
+        // If testUserId provided, compute their exact permissions for the channel
         const testUserId = typeof body.testUserId === "string" ? body.testUserId.trim() : "";
+        if (testUserId) {
+          try {
+            const memberRes = await fetch(
+              `https://discord.com/api/v10/guilds/${REQUIRED_GUILD_ID}/members/${testUserId}`,
+              { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
+            );
+            if (memberRes.ok) {
+              const member = await memberRes.json();
+              results.testUserRoles = member.roles;
+              results.testUserHasTargetRole = member.roles.includes(ACCESS_ROLE_ID);
+            } else {
+              results.testUser = { status: memberRes.status, error: await memberRes.text() };
+            }
+          } catch (err) {
+            results.testUser = { error: err.message };
+          }
+        }
+
+        // Try a direct role add test on a test user if provided
         if (testUserId) {
           try {
             const testRoleRes = await fetch(
@@ -801,9 +849,11 @@ export default {
         }
 
         // Get channel permission overwrites
+        let roleAllow = 0n;
+        let roleDeny = 0n;
         try {
           const chanRes = await fetch(
-            `https://discord.com/api/channels/${channelId}`,
+            `https://discord.com/api/v10/channels/${channelId}`,
             { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
           );
           if (!chanRes.ok) {
@@ -814,6 +864,9 @@ export default {
             return jsonResponse({ error: "Channel is not in the configured guild." }, 400, origin, env);
           }
           const overwrites = channel.permission_overwrites || [];
+          console.log("[verify-access] Channel overwrites raw:", JSON.stringify(overwrites));
+          console.log("[verify-access] Member roles:", JSON.stringify(memberRoles));
+          console.log("[verify-access] Perms before overwrites:", permissions.toString());
 
           // Apply @everyone overwrite
           const evOverwrite = overwrites.find(o => o.id === REQUIRED_GUILD_ID);
@@ -821,19 +874,21 @@ export default {
             permissions &= ~BigInt(evOverwrite.deny);
             permissions |= BigInt(evOverwrite.allow);
           }
+          console.log("[verify-access] Perms after @everyone overwrite:", permissions.toString());
 
           // Apply role overwrites
-          let roleAllow = 0n;
-          let roleDeny = 0n;
           for (const roleId of memberRoles) {
             const ow = overwrites.find(o => o.id === roleId && o.type === 0);
             if (ow) {
+              console.log("[verify-access] Found role overwrite for", roleId, "allow:", ow.allow, "deny:", ow.deny, "type:", ow.type, "typeof type:", typeof ow.type);
               roleAllow |= BigInt(ow.allow);
               roleDeny |= BigInt(ow.deny);
             }
           }
+          console.log("[verify-access] roleAllow:", roleAllow.toString(), "roleDeny:", roleDeny.toString());
           permissions &= ~roleDeny;
           permissions |= roleAllow;
+          console.log("[verify-access] Perms after role overwrites:", permissions.toString());
 
           // Apply member-specific overwrite
           const memberOverwrite = overwrites.find(o => o.id === discordUserId && o.type === 1);
@@ -846,7 +901,8 @@ export default {
         }
 
         const hasChannelAccess = Boolean(permissions & VIEW_CHANNEL_BIT);
-        return jsonResponse({ ok: true, member: true, channelAccess: hasChannelAccess }, 200, origin, env);
+        console.log("[verify-access] userId:", discordUserId, "memberRoles:", JSON.stringify(memberRoles), "finalPerms:", permissions.toString(), "VIEW_CHANNEL:", hasChannelAccess);
+        return jsonResponse({ ok: true, member: true, channelAccess: hasChannelAccess, _debug: { userId: discordUserId, roles: memberRoles, perms: permissions.toString(), hasView: hasChannelAccess, roleAllow: roleAllow.toString(), roleDeny: roleDeny.toString() } }, 200, origin, env);
       }
 
       /* ── request-access: submit access request form ── */
