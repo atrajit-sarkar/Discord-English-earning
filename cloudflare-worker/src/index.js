@@ -12,6 +12,8 @@ const SHARE_COOLDOWN_MS = 60_000;   // 60 seconds between Discord shares
 
 const REQUIRED_GUILD_ID = "1183341118360928327";
 const REQUIRED_CHANNEL_ID = "1478308208689811568";
+const ADMIN_CHANNEL_ID = "1394159969103777889";  // Channel for access requests
+const ACCESS_ROLE_ID = "1478308535287812118";    // Role to grant on approval
 const VIEW_CHANNEL_BIT = 0x400n;
 const ADMINISTRATOR_BIT = 0x8n;
 
@@ -739,6 +741,430 @@ export default {
 
         const hasChannelAccess = Boolean(permissions & VIEW_CHANNEL_BIT);
         return jsonResponse({ ok: true, member: true, channelAccess: hasChannelAccess }, 200, origin, env);
+      }
+
+      /* ── request-access: submit access request form ── */
+      if (action === "request-access") {
+        if (!env.DISCORD_BOT_TOKEN) {
+          return jsonResponse({ error: "Bot token not configured." }, 500, origin, env);
+        }
+
+        const discordToken = typeof body.discordToken === "string" ? body.discordToken.trim() : "";
+        const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 500) : "";
+        const userId = typeof body.userId === "string" ? body.userId.trim() : "";
+        const username = typeof body.username === "string" ? body.username.trim().slice(0, 32) : "";
+        const avatar = typeof body.avatar === "string" ? body.avatar.trim() : "";
+
+        if (!discordToken) {
+          return jsonResponse({ error: "Missing Discord token." }, 401, origin, env);
+        }
+        if (!reason) {
+          return jsonResponse({ error: "Please provide a reason for your request." }, 400, origin, env);
+        }
+        if (!userId) {
+          return jsonResponse({ error: "Missing user ID." }, 400, origin, env);
+        }
+
+        // Verify user identity
+        let discordUserId;
+        try {
+          const meRes = await fetch("https://discord.com/api/users/@me", {
+            headers: { Authorization: `Bearer ${discordToken}` },
+          });
+          if (!meRes.ok) {
+            return jsonResponse({ error: "Discord token invalid." }, 401, origin, env);
+          }
+          const me = await meRes.json();
+          discordUserId = me.id;
+          if (discordUserId !== userId) {
+            return jsonResponse({ error: "User ID mismatch." }, 403, origin, env);
+          }
+        } catch {
+          return jsonResponse({ error: "Failed to verify Discord identity." }, 401, origin, env);
+        }
+
+        // Generate unique request ID
+        const requestId = crypto.randomUUID();
+        const timestamp = new Date().toISOString();
+
+        // Store the request in Firestore
+        const accessToken = await getFirebaseAccessToken(env);
+        if (!accessToken) {
+          return jsonResponse({ error: "Database not configured." }, 500, origin, env);
+        }
+
+        const projectId = env.FIREBASE_PROJECT_ID;
+        const docUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/AccessRequests/${encodeURIComponent(requestId)}`;
+
+        const requestData = {
+          fields: {
+            requestId: { stringValue: requestId },
+            discordUserId: { stringValue: discordUserId },
+            username: { stringValue: username },
+            avatar: { stringValue: avatar },
+            reason: { stringValue: reason },
+            status: { stringValue: "pending" },
+            createdAt: { timestampValue: timestamp },
+          },
+        };
+
+        try {
+          const createRes = await fetch(docUrl, {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(requestData),
+          });
+
+          if (!createRes.ok) {
+            console.error("Failed to store access request:", await createRes.text());
+            return jsonResponse({ error: "Failed to save request." }, 500, origin, env);
+          }
+        } catch (err) {
+          console.error("Error storing access request:", err);
+          return jsonResponse({ error: "Failed to save request." }, 500, origin, env);
+        }
+
+        // Build the review link URL
+        const allowedOrigins = getAllowedOrigins(env.ALLOWED_ORIGINS);
+        const siteOrigin = allowedOrigins.find(o => o.includes("github.io")) || allowedOrigins[0] || "";
+        const reviewLink = siteOrigin ? `${siteOrigin}/access-request.html?id=${requestId}` : `Review Request ID: ${requestId}`;
+
+        // Send notification to admin channel
+        const embed = {
+          title: "\u{1F4E8} New Access Request",
+          description: `**${username}** has requested access to the English Quiz channel.`,
+          color: 0x5865f2,
+          fields: [
+            {
+              name: "\u{1F464} User",
+              value: `<@${discordUserId}>\n(${username})`,
+              inline: true,
+            },
+            {
+              name: "\u{1F4DD} Reason",
+              value: reason.slice(0, 1024),
+              inline: false,
+            },
+            {
+              name: "\u{1F517} Review",
+              value: `[Click here to review](${reviewLink})`,
+              inline: false,
+            },
+          ],
+          thumbnail: avatar ? { url: avatar } : undefined,
+          footer: { text: `Request ID: ${requestId}` },
+          timestamp: timestamp,
+        };
+
+        try {
+          const msgRes = await fetch(
+            `https://discord.com/api/channels/${ADMIN_CHANNEL_ID}/messages`,
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                embeds: [embed],
+              }),
+            }
+          );
+
+          if (!msgRes.ok) {
+            console.error("Failed to send admin notification:", await msgRes.text());
+            // Don't fail the request, the data is saved
+          }
+        } catch (err) {
+          console.error("Error sending admin notification:", err);
+        }
+
+        return jsonResponse({ ok: true, requestId }, 200, origin, env);
+      }
+
+      /* ── get-request: fetch access request details ── */
+      if (action === "get-request") {
+        const requestId = typeof body.requestId === "string" ? body.requestId.trim() : "";
+        if (!requestId) {
+          return jsonResponse({ error: "Missing request ID." }, 400, origin, env);
+        }
+
+        const accessToken = await getFirebaseAccessToken(env);
+        if (!accessToken) {
+          return jsonResponse({ error: "Database not configured." }, 500, origin, env);
+        }
+
+        const projectId = env.FIREBASE_PROJECT_ID;
+        const docUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/AccessRequests/${encodeURIComponent(requestId)}`;
+
+        try {
+          const getRes = await fetch(docUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+
+          if (getRes.status === 404) {
+            return jsonResponse({ error: "Request not found." }, 404, origin, env);
+          }
+          if (!getRes.ok) {
+            return jsonResponse({ error: "Failed to fetch request." }, 500, origin, env);
+          }
+
+          const doc = await getRes.json();
+          const fields = doc.fields || {};
+
+          return jsonResponse({
+            ok: true,
+            request: {
+              requestId: fields.requestId?.stringValue || "",
+              discordUserId: fields.discordUserId?.stringValue || "",
+              username: fields.username?.stringValue || "",
+              avatar: fields.avatar?.stringValue || "",
+              reason: fields.reason?.stringValue || "",
+              status: fields.status?.stringValue || "pending",
+              createdAt: fields.createdAt?.timestampValue || "",
+            },
+          }, 200, origin, env);
+        } catch (err) {
+          console.error("Error fetching access request:", err);
+          return jsonResponse({ error: "Failed to fetch request." }, 500, origin, env);
+        }
+      }
+
+      /* ── approve-request: grant role to user ── */
+      if (action === "approve-request") {
+        if (!env.DISCORD_BOT_TOKEN) {
+          return jsonResponse({ error: "Bot token not configured." }, 500, origin, env);
+        }
+
+        const requestId = typeof body.requestId === "string" ? body.requestId.trim() : "";
+        if (!requestId) {
+          return jsonResponse({ error: "Missing request ID." }, 400, origin, env);
+        }
+
+        const accessToken = await getFirebaseAccessToken(env);
+        if (!accessToken) {
+          return jsonResponse({ error: "Database not configured." }, 500, origin, env);
+        }
+
+        const projectId = env.FIREBASE_PROJECT_ID;
+        const docUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/AccessRequests/${encodeURIComponent(requestId)}`;
+
+        // Fetch the request
+        let requestData;
+        try {
+          const getRes = await fetch(docUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (getRes.status === 404) {
+            return jsonResponse({ error: "Request not found." }, 404, origin, env);
+          }
+          if (!getRes.ok) {
+            return jsonResponse({ error: "Failed to fetch request." }, 500, origin, env);
+          }
+          const doc = await getRes.json();
+          requestData = doc.fields || {};
+        } catch {
+          return jsonResponse({ error: "Failed to fetch request." }, 500, origin, env);
+        }
+
+        const discordUserId = requestData.discordUserId?.stringValue;
+        const username = requestData.username?.stringValue || "User";
+        const currentStatus = requestData.status?.stringValue;
+
+        if (!discordUserId) {
+          return jsonResponse({ error: "Invalid request data." }, 400, origin, env);
+        }
+
+        if (currentStatus !== "pending") {
+          return jsonResponse({ error: `Request already ${currentStatus}.` }, 400, origin, env);
+        }
+
+        // Add role to user
+        try {
+          const roleRes = await fetch(
+            `https://discord.com/api/guilds/${REQUIRED_GUILD_ID}/members/${discordUserId}/roles/${ACCESS_ROLE_ID}`,
+            {
+              method: "PUT",
+              headers: {
+                Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
+              },
+            }
+          );
+
+          if (!roleRes.ok && roleRes.status !== 204) {
+            const errText = await roleRes.text();
+            console.error("Failed to add role:", roleRes.status, errText);
+            return jsonResponse({ error: "Failed to grant role." }, 502, origin, env);
+          }
+        } catch (err) {
+          console.error("Error adding role:", err);
+          return jsonResponse({ error: "Failed to grant role." }, 502, origin, env);
+        }
+
+        // Update request status
+        try {
+          await fetch(`${docUrl}?updateMask.fieldPaths=status&updateMask.fieldPaths=reviewedAt`, {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              fields: {
+                status: { stringValue: "approved" },
+                reviewedAt: { timestampValue: new Date().toISOString() },
+              },
+            }),
+          });
+        } catch {
+          // Non-critical
+        }
+
+        // Send DM to user
+        try {
+          // First create a DM channel
+          const dmChannelRes = await fetch("https://discord.com/api/users/@me/channels", {
+            method: "POST",
+            headers: {
+              Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ recipient_id: discordUserId }),
+          });
+
+          if (dmChannelRes.ok) {
+            const dmChannel = await dmChannelRes.json();
+            await fetch(`https://discord.com/api/channels/${dmChannel.id}/messages`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                embeds: [{
+                  title: "\u2705 Access Request Approved!",
+                  description: "Your request to access the English Quiz channel has been **approved**! You can now take quizzes and track your progress.",
+                  color: 0x23a559,
+                  footer: { text: "Welcome to the English Quiz community!" },
+                }],
+              }),
+            });
+          }
+        } catch (err) {
+          console.error("Error sending approval DM:", err);
+          // Non-critical
+        }
+
+        return jsonResponse({ ok: true, message: `Approved access for ${username}` }, 200, origin, env);
+      }
+
+      /* ── deny-request: reject and notify user ── */
+      if (action === "deny-request") {
+        if (!env.DISCORD_BOT_TOKEN) {
+          return jsonResponse({ error: "Bot token not configured." }, 500, origin, env);
+        }
+
+        const requestId = typeof body.requestId === "string" ? body.requestId.trim() : "";
+        if (!requestId) {
+          return jsonResponse({ error: "Missing request ID." }, 400, origin, env);
+        }
+
+        const accessToken = await getFirebaseAccessToken(env);
+        if (!accessToken) {
+          return jsonResponse({ error: "Database not configured." }, 500, origin, env);
+        }
+
+        const projectId = env.FIREBASE_PROJECT_ID;
+        const docUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/AccessRequests/${encodeURIComponent(requestId)}`;
+
+        // Fetch the request
+        let requestData;
+        try {
+          const getRes = await fetch(docUrl, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+          });
+          if (getRes.status === 404) {
+            return jsonResponse({ error: "Request not found." }, 404, origin, env);
+          }
+          if (!getRes.ok) {
+            return jsonResponse({ error: "Failed to fetch request." }, 500, origin, env);
+          }
+          const doc = await getRes.json();
+          requestData = doc.fields || {};
+        } catch {
+          return jsonResponse({ error: "Failed to fetch request." }, 500, origin, env);
+        }
+
+        const discordUserId = requestData.discordUserId?.stringValue;
+        const username = requestData.username?.stringValue || "User";
+        const currentStatus = requestData.status?.stringValue;
+
+        if (!discordUserId) {
+          return jsonResponse({ error: "Invalid request data." }, 400, origin, env);
+        }
+
+        if (currentStatus !== "pending") {
+          return jsonResponse({ error: `Request already ${currentStatus}.` }, 400, origin, env);
+        }
+
+        // Update request status
+        try {
+          await fetch(`${docUrl}?updateMask.fieldPaths=status&updateMask.fieldPaths=reviewedAt`, {
+            method: "PATCH",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              fields: {
+                status: { stringValue: "denied" },
+                reviewedAt: { timestampValue: new Date().toISOString() },
+              },
+            }),
+          });
+        } catch {
+          // Non-critical
+        }
+
+        // Send DM to user
+        try {
+          // First create a DM channel
+          const dmChannelRes = await fetch("https://discord.com/api/users/@me/channels", {
+            method: "POST",
+            headers: {
+              Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ recipient_id: discordUserId }),
+          });
+
+          if (dmChannelRes.ok) {
+            const dmChannel = await dmChannelRes.json();
+            await fetch(`https://discord.com/api/channels/${dmChannel.id}/messages`, {
+              method: "POST",
+              headers: {
+                Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                embeds: [{
+                  title: "\u274C Access Request Denied",
+                  description: "Your request to access the English Quiz channel has been **denied**. If you believe this was a mistake, you can submit another request with more details about your interest.",
+                  color: 0xed4245,
+                  footer: { text: "You can appeal by submitting a new request." },
+                }],
+              }),
+            });
+          }
+        } catch (err) {
+          console.error("Error sending denial DM:", err);
+          // Non-critical
+        }
+
+        return jsonResponse({ ok: true, message: `Denied access for ${username}` }, 200, origin, env);
       }
 
       const validation = await validatePayload(body, env, action === "share");

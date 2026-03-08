@@ -560,7 +560,11 @@ export default function App() {
   const [loadingUserStats, setLoadingUserStats] = useState(false);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [authError, setAuthError] = useState("");
-  const [isGuildMember, setIsGuildMember] = useState(false);
+  const [isMember, setIsMember] = useState(false);
+  const [hasChannelAccess, setHasChannelAccess] = useState(false);
+  const [accessRequestReason, setAccessRequestReason] = useState("");
+  const [accessRequestStatus, setAccessRequestStatus] = useState("idle"); // idle, submitting, submitted, error
+  const [accessRequestError, setAccessRequestError] = useState("");
   const [quizState, setQuizState] = useState("welcome");
   const [currentQuizId, setCurrentQuizId] = useState(null);
   const currentQuizData = currentQuizId ? QUIZZES[currentQuizId] : [];
@@ -756,7 +760,8 @@ export default function App() {
           };
 
           /* Check guild membership + channel access via worker */
-          let hasAccess = false;
+          let memberStatus = false;
+          let channelStatus = false;
           if (relayConfigured) {
             try {
               const verifyRes = await fetch(DISCORD_RELAY_URL, {
@@ -767,8 +772,9 @@ export default function App() {
               if (verifyRes.ok) {
                 const verifyData = await verifyRes.json();
                 console.log("[verify-access] Response:", verifyData);
-                hasAccess = verifyData.member && verifyData.channelAccess;
-                console.log("[verify-access] Has access:", hasAccess);
+                memberStatus = verifyData.member ?? false;
+                channelStatus = verifyData.channelAccess ?? false;
+                console.log("[verify-access] Member:", memberStatus, "Channel access:", channelStatus);
               } else {
                 console.error("[verify-access] Failed:", verifyRes.status, await verifyRes.text());
               }
@@ -780,8 +786,9 @@ export default function App() {
           }
 
           if (isMountedRef.current) {
-            console.log("[verify-access] Setting isGuildMember to:", hasAccess);
-            setIsGuildMember(hasAccess);
+            console.log("[verify-access] Setting isMember:", memberStatus, "hasChannelAccess:", channelStatus);
+            setIsMember(memberStatus);
+            setHasChannelAccess(channelStatus);
           }
 
           const cachedProgress = applyDiscordUser(nextUser);
@@ -807,7 +814,8 @@ export default function App() {
         /* Re-check guild membership + channel access with stored token */
         const storedOauth = readStoredOauthResponse();
         const storedToken = storedOauth?.accessToken;
-        let hasAccess = false;
+        let memberStatus = false;
+        let channelStatus = false;
         if (storedToken && relayConfigured) {
           try {
             const verifyRes = await fetch(DISCORD_RELAY_URL, {
@@ -818,8 +826,9 @@ export default function App() {
             if (verifyRes.ok) {
               const verifyData = await verifyRes.json();
               console.log("[verify-access] (stored token) Response:", verifyData);
-              hasAccess = verifyData.member && verifyData.channelAccess;
-              console.log("[verify-access] (stored token) Has access:", hasAccess);
+              memberStatus = verifyData.member ?? false;
+              channelStatus = verifyData.channelAccess ?? false;
+              console.log("[verify-access] (stored token) Member:", memberStatus, "Channel access:", channelStatus);
             } else {
               console.error("[verify-access] (stored token) Failed:", verifyRes.status, await verifyRes.text());
             }
@@ -831,8 +840,9 @@ export default function App() {
         }
 
         if (isMountedRef.current) {
-          console.log("[verify-access] (stored token) Setting isGuildMember to:", hasAccess);
-          setIsGuildMember(hasAccess);
+          console.log("[verify-access] (stored token) Setting isMember:", memberStatus, "hasChannelAccess:", channelStatus);
+          setIsMember(memberStatus);
+          setHasChannelAccess(channelStatus);
         }
 
         const cachedProgress = applyDiscordUser(savedUser);
@@ -996,8 +1006,49 @@ export default function App() {
     setUser(null);
     setUserStats(null);
     setLoadingUserStats(false);
-    setIsGuildMember(false);
+    setIsMember(false);
+    setHasChannelAccess(false);
+    setAccessRequestReason("");
+    setAccessRequestStatus("idle");
+    setAccessRequestError("");
     setQuizState("welcome");
+  }
+
+  /* Submit access request form */
+  async function handleAccessRequest(e) {
+    e.preventDefault();
+    if (!accessRequestReason.trim() || accessRequestStatus === "submitting") return;
+
+    setAccessRequestStatus("submitting");
+    setAccessRequestError("");
+
+    const storedOauth = readStoredOauthResponse();
+    const discordToken = storedOauth?.accessToken;
+
+    try {
+      const res = await fetch(DISCORD_RELAY_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "request-access",
+          discordToken,
+          reason: accessRequestReason.trim(),
+          userId: user.id,
+          username: user.username,
+          avatar: user.avatar,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to submit request");
+      }
+
+      setAccessRequestStatus("submitted");
+    } catch (err) {
+      setAccessRequestError(err.message);
+      setAccessRequestStatus("error");
+    }
   }
 
   /* Just record the selected answer — no reveal, no scoring yet */
@@ -1319,9 +1370,9 @@ export default function App() {
     );
   }
 
-  /* ─── Join Discord Gate ─── */
-  if (user && !isGuildMember) {
-    console.log("[Join Gate] User:", user?.username, "isGuildMember:", isGuildMember);
+  /* ─── Join Discord Gate (not a member) ─── */
+  if (user && !isMember) {
+    console.log("[Join Gate] User:", user?.username, "isMember:", isMember);
     return (
       <main className="login-page">
         <FloatingParticles />
@@ -1331,7 +1382,7 @@ export default function App() {
           </div>
           <h1 className="login-card__title">Join Our Server</h1>
           <p className="login-card__subtitle">
-            You need to be a member of our Discord server and have access to the quiz channel to continue.
+            You need to be a member of our Discord server to continue.
           </p>
 
           <div className="login-card__divider" />
@@ -1365,6 +1416,108 @@ export default function App() {
             className="button button--ghost"
             onClick={handleLogout}
             style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}
+          >
+            Logout
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  /* ─── Request Channel Access (member but no channel access) ─── */
+  if (user && isMember && !hasChannelAccess) {
+    console.log("[Access Request] User:", user?.username, "isMember:", isMember, "hasChannelAccess:", hasChannelAccess);
+    return (
+      <main className="login-page">
+        <FloatingParticles />
+        <div className="login-card" style={{ maxWidth: "420px" }}>
+          <div className="login-card__logo">
+            <DiscordLogo />
+          </div>
+          <h1 className="login-card__title">Request Access</h1>
+          <p className="login-card__subtitle">
+            You're in the server but don't have access to the quiz channel yet. Tell us why you'd like to join!
+          </p>
+
+          <div className="login-card__divider" />
+
+          {accessRequestStatus === "submitted" ? (
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: "3rem", marginBottom: "0.5rem" }}>{"\u2705"}</div>
+              <h2 style={{ color: "var(--dc-green)", marginBottom: "0.5rem" }}>Request Submitted!</h2>
+              <p style={{ color: "var(--dc-text-muted)", fontSize: "0.9rem" }}>
+                Your request has been sent to the admins. You'll receive a DM once it's reviewed.
+              </p>
+              <button
+                type="button"
+                className="button button--primary"
+                onClick={() => window.location.reload()}
+                style={{ marginTop: "1rem" }}
+              >
+                {"\u{1F504}"} Check Status
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleAccessRequest} style={{ width: "100%" }}>
+              <div style={{ marginBottom: "1rem" }}>
+                <label
+                  htmlFor="accessReason"
+                  style={{ display: "block", marginBottom: "0.5rem", color: "var(--dc-text-secondary)", fontSize: "0.9rem" }}
+                >
+                  Why do you want to join the English quiz?
+                </label>
+                <textarea
+                  id="accessReason"
+                  value={accessRequestReason}
+                  onChange={(e) => setAccessRequestReason(e.target.value)}
+                  placeholder="Tell us about yourself and your interest in improving your English..."
+                  rows={4}
+                  maxLength={500}
+                  required
+                  style={{
+                    width: "100%",
+                    padding: "0.75rem",
+                    borderRadius: "8px",
+                    border: "1px solid var(--dc-background-modifier-accent)",
+                    backgroundColor: "var(--dc-background-secondary)",
+                    color: "var(--dc-text-normal)",
+                    fontSize: "0.95rem",
+                    resize: "vertical",
+                    fontFamily: "inherit",
+                  }}
+                />
+                <p style={{ color: "var(--dc-text-muted)", fontSize: "0.75rem", marginTop: "0.25rem", textAlign: "right" }}>
+                  {accessRequestReason.length}/500
+                </p>
+              </div>
+
+              {accessRequestError && (
+                <div className="notice notice--error" style={{ marginBottom: "1rem" }}>
+                  <ErrorIcon className="icon" />
+                  <span>{accessRequestError}</span>
+                </div>
+              )}
+
+              <button
+                type="submit"
+                className="button button--primary"
+                disabled={accessRequestStatus === "submitting" || !accessRequestReason.trim()}
+                style={{ width: "100%" }}
+              >
+                {accessRequestStatus === "submitting" ? (
+                  <><SpinnerIcon className="icon icon--spin" /> Submitting...</>
+                ) : (
+                  <>{"\u{1F4E8}"} Submit Request</>
+                )}
+              </button>
+            </form>
+          )}
+
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={handleLogout}
+            style={{ marginTop: "1rem", fontSize: "0.8rem" }}
           >
             Logout
           </button>
