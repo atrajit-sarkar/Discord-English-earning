@@ -1,14 +1,13 @@
-This is a fantastic project idea! Building a quiz that integrates directly with your Discord community is a great way to make learning interactive and social.
-
-To make this work as a static web app hosted on GitHub Pages, we will use **Discord OAuth2 (Implicit Grant Flow)** to log the user in, and a **Discord Webhook** to send the beautiful markdown results to your channel.
+This project works as a static web app on GitHub Pages by using **Discord OAuth2** for login and a **Cloudflare Worker relay** to post quiz results to Discord without exposing the raw webhook in the browser.
 
 ### What You Need to Gather (Your "To-Do" List)
 
-Before you deploy, you will need to get three pieces of information to plug into the code:
+Before you deploy, you will need these pieces of information:
 
 1. **Discord Webhook URL:**
 * Go to your Discord Server -> Server Settings -> Integrations -> Webhooks.
 * Create a New Webhook, pick the channel you want results sent to, and click **Copy Webhook URL**.
+* Put this in the Cloudflare Worker secret store, not in the frontend `.env`.
 
 
 2. **Discord Client ID:**
@@ -20,9 +19,13 @@ Before you deploy, you will need to get three pieces of information to plug into
 3. **Your GitHub Pages URL (Redirect URI):**
 * Once you know where you will host it (e.g., `https://yourusername.github.io/english-quiz/`), you need to add this exact URL into the **Redirects** section of the OAuth2 tab in the Discord Developer Portal.
 
+4. **Your Cloudflare Worker URL:**
+* Deploy the Worker in `cloudflare-worker/`.
+* Copy the deployed `https://<name>.<subdomain>.workers.dev` URL into `VITE_DISCORD_RELAY_URL` in the frontend `.env`.
 
-
-Here is the complete, single-file React application. It handles the Discord login, the interactive quiz, and sends a rich formatted embed to your Discord channel.
+5. **Optional but recommended: Cloudflare Turnstile keys**
+* Add the site key to `VITE_TURNSTILE_SITE_KEY` in the frontend `.env`.
+* Add the secret key to the Worker as `TURNSTILE_SECRET_KEY`.
 
 ### How to use this code for GitHub Pages
 
@@ -37,8 +40,9 @@ Since you want to host this on GitHub Pages, the easiest way to deploy a React a
 
 
 2. **Add the code:**
-* Replace the contents of `src/App.jsx` with the code I provided above.
-* **Crucial Step:** Paste your `DISCORD_CLIENT_ID` and `DISCORD_WEBHOOK_URL` at the top of the file!
+* Use the existing app files in this repo.
+* **Crucial Step:** Put `VITE_DISCORD_CLIENT_ID` and `VITE_DISCORD_RELAY_URL` in `.env`.
+* Do not put the Discord webhook URL in the frontend code.
 
 
 3. **Deploy to GitHub pages:**
@@ -54,4 +58,4 @@ Since you want to host this on GitHub Pages, the easiest way to deploy a React a
 
 
 
-*Security Note: Because this is a static site, your Discord Webhook URL will be visible to anyone who inspects the website code. For a fun community project, this is usually totally fine, but keep it in mind!*
+*Security Note: With the Cloudflare Worker relay, the webhook stays server-side. Rotate any old webhook that was previously exposed in the frontend or GitHub history.*

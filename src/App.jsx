@@ -5,9 +5,12 @@ import businessQuizImage from "../business-quiz.png";
 import nauticalQuizImage from "../public/nautical-origin-idioms-expressions.png";
 
 const DISCORD_CLIENT_ID = import.meta.env.VITE_DISCORD_CLIENT_ID?.trim() ?? "";
-const DISCORD_WEBHOOK_URL =
-  import.meta.env.VITE_DISCORD_WEBHOOK_URL?.trim() ?? "";
+const DISCORD_RELAY_URL = import.meta.env.VITE_DISCORD_RELAY_URL?.trim() ?? "";
+const TURNSTILE_SITE_KEY =
+  import.meta.env.VITE_TURNSTILE_SITE_KEY?.trim() ?? "";
 const REDIRECT_URI = `${window.location.origin}${window.location.pathname}`;
+const SITE_BASE_URL = `${window.location.origin}${window.location.pathname}`;
+const PENDING_QUIZ_KEY = "discord-pending-quiz";
 const OAUTH_STORAGE_KEY = "discord-oauth-response";
 const USER_STORAGE_KEY = "discord-user-profile";
 const USER_STATS_STORAGE_KEY_PREFIX = "discord-user-stats:";
@@ -566,9 +569,14 @@ export default function App() {
   const [userAnswers, setUserAnswers] = useState([]);
   const [pastReviewAttempt, setPastReviewAttempt] = useState(null);
   const quizCardRefs = useRef({});
+  const turnstileContainerRef = useRef(null);
+  const turnstileWidgetIdRef = useRef(null);
+  const [turnstileToken, setTurnstileToken] = useState("");
+  const [turnstileError, setTurnstileError] = useState("");
 
   const discordConfigured = !isPlaceholder(DISCORD_CLIENT_ID);
-  const webhookConfigured = !isPlaceholder(DISCORD_WEBHOOK_URL);
+  const relayConfigured = !isPlaceholder(DISCORD_RELAY_URL);
+  const turnstileConfigured = !isPlaceholder(TURNSTILE_SITE_KEY);
   const userStatsView = userStats ?? EMPTY_USER_STATS;
   const recentQuizHistory = userStatsView.quizHistory;
   const seenQuizIds = new Set(userStatsView.seenQuizzes);
@@ -642,11 +650,45 @@ export default function App() {
       setLoadingUserStats(true);
       writeStoredUser(nextUser);
       setAuthError("");
-      setQuizState("dashboard");
+
+      /* Auto-start a quiz if a deep-link was pending */
+      const pendingQuiz = sessionStorage.getItem(PENDING_QUIZ_KEY);
+      if (pendingQuiz && QUIZZES[pendingQuiz]) {
+        sessionStorage.removeItem(PENDING_QUIZ_KEY);
+        setCurrentQuizId(pendingQuiz);
+        setCurrentQuestion(0);
+        setScore(0);
+        setStreak(0);
+        setBestStreak(0);
+        setSelectedAnswer(null);
+        setAnswerRevealed(false);
+        setQuestionKey(0);
+        setShowConfetti(false);
+        setWebhookStatus("idle");
+        setUserAnswers([]);
+        setQuizState("quiz");
+      } else {
+        setQuizState("dashboard");
+      }
+
       return cachedProgress;
     }
 
     async function bootstrapAuth() {
+      /* 0. Capture ?quiz= deep-link param and persist it for after OAuth */
+      const searchParams = new URLSearchParams(window.location.search);
+      const quizParam = searchParams.get("quiz");
+      if (quizParam && QUIZZES[quizParam]) {
+        sessionStorage.setItem(PENDING_QUIZ_KEY, quizParam);
+        searchParams.delete("quiz");
+        const cleanSearch = searchParams.toString();
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}${cleanSearch ? `?${cleanSearch}` : ""}`
+        );
+      }
+
       /* 1. Check for an OAuth callback in the URL hash */
       const fragment = new URLSearchParams(window.location.hash.slice(1));
       const hashPayload = {
@@ -748,12 +790,128 @@ export default function App() {
     };
   }, []);
 
+  function clearTurnstileWidget() {
+    if (!window.turnstile || turnstileWidgetIdRef.current === null) {
+      turnstileWidgetIdRef.current = null;
+      return;
+    }
+
+    try {
+      window.turnstile.remove(turnstileWidgetIdRef.current);
+    } catch {
+      // Ignore stale widget cleanup failures.
+    }
+
+    turnstileWidgetIdRef.current = null;
+  }
+
+  function resetTurnstileChallenge() {
+    setTurnstileToken("");
+
+    if (!window.turnstile || turnstileWidgetIdRef.current === null) {
+      return;
+    }
+
+    try {
+      window.turnstile.reset(turnstileWidgetIdRef.current);
+    } catch {
+      clearTurnstileWidget();
+    }
+  }
+
+  useEffect(() => {
+    if (!turnstileConfigured || quizState !== "results") {
+      setTurnstileToken("");
+      setTurnstileError("");
+      clearTurnstileWidget();
+      return;
+    }
+
+    let cancelled = false;
+    let attempts = 0;
+    let intervalId = null;
+
+    setTurnstileToken("");
+    setTurnstileError("");
+    clearTurnstileWidget();
+
+    function mountTurnstile() {
+      if (cancelled || !window.turnstile || !turnstileContainerRef.current) {
+        return false;
+      }
+
+      turnstileContainerRef.current.innerHTML = "";
+      turnstileWidgetIdRef.current = window.turnstile.render(
+        turnstileContainerRef.current,
+        {
+          sitekey: TURNSTILE_SITE_KEY,
+          theme: "dark",
+          callback(token) {
+            if (!cancelled) {
+              setTurnstileError("");
+              setTurnstileToken(token);
+            }
+          },
+          "expired-callback"() {
+            if (!cancelled) {
+              setTurnstileToken("");
+            }
+          },
+          "error-callback"() {
+            if (!cancelled) {
+              setTurnstileToken("");
+              setTurnstileError(
+                "Could not load the anti-spam check. Refresh and try again."
+              );
+            }
+          },
+        }
+      );
+
+      return true;
+    }
+
+    if (!mountTurnstile()) {
+      intervalId = window.setInterval(() => {
+        attempts += 1;
+
+        if (mountTurnstile()) {
+          window.clearInterval(intervalId);
+          return;
+        }
+
+        if (attempts >= 20) {
+          window.clearInterval(intervalId);
+          if (!cancelled) {
+            setTurnstileError(
+              "Could not load the anti-spam check. Refresh and try again."
+            );
+          }
+        }
+      }, 250);
+    }
+
+    return () => {
+      cancelled = true;
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+      }
+      clearTurnstileWidget();
+    };
+  }, [quizState, currentQuizId, score, turnstileConfigured]);
+
   function handleDiscordLogin() {
     if (!discordConfigured) {
       setAuthError(
         "Add VITE_DISCORD_CLIENT_ID to .env before using Discord login."
       );
       return;
+    }
+
+    /* Preserve any pending quiz deep-link through the OAuth flow */
+    const pendingQuiz = sessionStorage.getItem(PENDING_QUIZ_KEY);
+    if (!pendingQuiz && currentQuizId) {
+      sessionStorage.setItem(PENDING_QUIZ_KEY, currentQuizId);
     }
 
     const oauthUrl =
@@ -835,57 +993,51 @@ export default function App() {
   }
 
   async function sendResultsToDiscord() {
-    if (!user || !webhookConfigured) {
+    if (!user || !relayConfigured) {
+      setWebhookStatus("error");
+      return;
+    }
+
+    if (turnstileConfigured && !turnstileToken) {
+      setTurnstileError("Complete the anti-spam check before sharing.");
       setWebhookStatus("error");
       return;
     }
 
     setWebhookStatus("sending");
-    const result = getResultSummary(score, currentQuizData.length);
-
-    const payload = {
-      username: "Marley",
-      embeds: [
-        {
-          title: `${result.emoji} Quiz Results: ${user.username}`,
-          description: `${user.username} completed the Modern Spoken English Quiz.`,
-          color: result.color,
-          thumbnail: { url: user.avatar },
-          fields: [
-            {
-              name: "\u{1F3AF} Score",
-              value: `**${score} / ${currentQuizData.length}** (${result.percentage}%)`,
-              inline: true,
-            },
-            {
-              name: "\u{1F4CA} Level",
-              value: `**${result.level}**`,
-              inline: true,
-            },
-            {
-              name: "\u{1F525} Best Streak",
-              value: `**${bestStreak}** in a row`,
-              inline: true,
-            },
-          ],
-          footer: {
-            text: "Your english Mam",
-          },
-          timestamp: new Date().toISOString(),
-        },
-      ],
-    };
+    setTurnstileError("");
+    const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === currentQuizId);
+    const quizTitle = quizMeta?.title ?? "Quiz";
 
     try {
-      const response = await fetch(DISCORD_WEBHOOK_URL, {
+      const response = await fetch(DISCORD_RELAY_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          username: user.username,
+          avatar: user.avatar,
+          quizId: currentQuizId,
+          quizTitle,
+          siteBaseUrl: SITE_BASE_URL,
+          score,
+          total: currentQuizData.length,
+          bestStreak,
+          turnstileToken,
+        }),
       });
-      setWebhookStatus(response.ok ? "success" : "error");
+
+      if (!response.ok) {
+        throw new Error(`Relay responded with ${response.status}`);
+      }
+
+      setWebhookStatus("success");
     } catch (error) {
       console.error(error);
       setWebhookStatus("error");
+    } finally {
+      if (turnstileConfigured) {
+        resetTurnstileChallenge();
+      }
     }
   }
 
@@ -1336,12 +1488,52 @@ export default function App() {
             {result.message}
           </p>
 
-          {!webhookConfigured && (
+          {!relayConfigured && (
             <div className="notice notice--warning">
               <ErrorIcon className="icon" />
               <span>
-                Add VITE_DISCORD_WEBHOOK_URL in .env to enable sharing.
+                Add VITE_DISCORD_RELAY_URL in .env to enable sharing.
               </span>
+            </div>
+          )}
+
+          {relayConfigured && !turnstileConfigured && (
+            <div className="notice notice--warning">
+              <ErrorIcon className="icon" />
+              <span>
+                Add VITE_TURNSTILE_SITE_KEY to enable the Worker&apos;s anti-spam check.
+              </span>
+            </div>
+          )}
+
+          {turnstileConfigured && (
+            <div
+              style={{
+                width: "100%",
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: "0.5rem",
+              }}
+            >
+              <div ref={turnstileContainerRef} />
+              {!turnstileToken && (
+                <span
+                  style={{
+                    color: "var(--dc-text-muted)",
+                    fontSize: "0.82rem",
+                    textAlign: "center",
+                  }}
+                >
+                  Complete the anti-spam check to enable sharing.
+                </span>
+              )}
+              {turnstileError && (
+                <div className="notice notice--error" style={{ width: "100%" }}>
+                  <ErrorIcon className="icon" />
+                  <span>{turnstileError}</span>
+                </div>
+              )}
             </div>
           )}
 
@@ -1351,7 +1543,11 @@ export default function App() {
                 type="button"
                 className="button button--discord"
                 onClick={sendResultsToDiscord}
-                disabled={webhookStatus === "sending" || !webhookConfigured}
+                disabled={
+                  webhookStatus === "sending" ||
+                  !relayConfigured ||
+                  (turnstileConfigured && !turnstileToken)
+                }
               >
                 {webhookStatus === "sending" ? (
                   <>
@@ -1395,7 +1591,7 @@ export default function App() {
           {webhookStatus === "error" && (
             <div className="notice notice--error">
               <ErrorIcon className="icon" />
-              <span>Could not send the result. Check the webhook URL.</span>
+              <span>Could not share the result. Check the relay URL or Worker logs.</span>
             </div>
           )}
         </section>
@@ -1699,9 +1895,13 @@ export default function App() {
                   <span className="setup-list__status" />
                   Discord Client ID
                 </li>
-                <li className={webhookConfigured ? "is-ready" : "is-missing"}>
+                <li className={relayConfigured ? "is-ready" : "is-missing"}>
                   <span className="setup-list__status" />
-                  Discord Webhook URL
+                  Discord relay URL
+                </li>
+                <li className={turnstileConfigured ? "is-ready" : "is-missing"}>
+                  <span className="setup-list__status" />
+                  Turnstile site key (recommended)
                 </li>
                 <li className="is-ready">
                   <span className="setup-list__status" />

@@ -7,13 +7,16 @@ This repository is now set up as a Vite + React app for a Discord-connected Engl
 - Node.js 18.18 or newer
 - A Discord application with OAuth2 enabled
 - A Discord webhook URL for the results channel
+- A Cloudflare Worker relay URL
+- A Cloudflare Turnstile site key and secret if you want anti-bot protection
 
 ## Local setup
 
 1. Copy `.env.example` to `.env`
 2. Fill in:
    - `VITE_DISCORD_CLIENT_ID`
-   - `VITE_DISCORD_WEBHOOK_URL`
+   - `VITE_DISCORD_RELAY_URL`
+   - `VITE_TURNSTILE_SITE_KEY` if you enable Turnstile
 3. Install packages:
    - `npm install`
 4. Start the app:
@@ -36,6 +39,26 @@ The app uses the current page URL as the redirect URI, so the value in Discord m
 
 The Vite base path is set to `./`, so you do not need to edit `vite.config.js` for a normal GitHub Pages deployment.
 
+## Cloudflare Worker relay
+
+Cloudflare Workers has a free plan, and it is a good fit for hiding the Discord webhook behind a tiny server-side relay while keeping the site itself on GitHub Pages.
+
+1. Create a Worker with the files in [`cloudflare-worker/`](cloudflare-worker/README.md).
+2. In Cloudflare, set:
+   - `ALLOWED_ORIGINS`
+     - Example: `http://localhost:5173,https://<your-github-username>.github.io`
+3. Add Worker secrets:
+   - `DISCORD_WEBHOOK_URL`
+   - `TURNSTILE_SECRET_KEY` if you enable Turnstile
+4. Deploy the Worker and copy its public URL.
+5. Put that URL into `VITE_DISCORD_RELAY_URL`.
+
+If you want the anti-spam check:
+
+1. Create a Turnstile widget for your site.
+2. Put the site key into `VITE_TURNSTILE_SITE_KEY`.
+3. Put the secret into the Worker as `TURNSTILE_SECRET_KEY`.
+
 ## Security note
 
-This is a static site. Your Discord webhook URL is embedded into the built frontend and can be discovered by anyone who inspects the client code. For a community project this may be acceptable, but a server-side relay is safer if abuse becomes a problem.
+Do not keep the Discord webhook in the frontend anymore. Put it only in the Worker secret store, then rotate the old webhook because the previous client-side one should be treated as exposed.

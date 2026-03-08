@@ -1,4 +1,6 @@
 dist
 node_modules
 .env
+.wrangler
+cloudflare-worker/.dev.vars
 .DS_Store

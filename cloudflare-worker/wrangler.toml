@@ -1,0 +1,6 @@
+name = "discord-english-quiz-relay"
+main = "src/index.js"
+compatibility_date = "2026-03-08"
+
+[vars]
+ALLOWED_ORIGINS = "http://localhost:5173,https://<your-github-username>.github.io"
