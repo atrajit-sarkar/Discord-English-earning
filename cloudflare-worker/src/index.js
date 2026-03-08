@@ -611,13 +611,12 @@ export default {
           const history = userDoc.existing.quizHistory.arrayValue.values;
           const lastAttemptTime = history
             .map(h => h.mapValue?.fields)
-            .filter(f => f?.quizId?.stringValue === validation.payload.quizId)
             .reduce((latest, f) => {
               const t = new Date(f.completedAt?.stringValue || 0).getTime();
               return t > latest ? t : latest;
             }, 0);
           if (lastAttemptTime && Date.now() - lastAttemptTime < SUBMIT_COOLDOWN_MS) {
-            return jsonResponse({ error: "Please wait before retaking this quiz." }, 429, origin, env);
+            return jsonResponse({ error: "Please wait before taking another quiz." }, 429, origin, env);
           }
         }
 
