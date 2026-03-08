@@ -1342,10 +1342,7 @@ export default function App() {
     setBestStreak(attempt.bestStreak);
     setUserAnswers(attempt.userAnswers || []);
     setPastReviewAttempt(attempt);
-    setQuizState("results");
-    setShowConfetti(false);
-    setSubmitError("");
-    setWebhookStatus("idle");
+    setQuizState("past-review");
   }
 
   function handleQuizCardKeyDown(event, quizId) {
@@ -1836,7 +1833,7 @@ export default function App() {
             {pastQuizData.map((q, i) => {
               const userAns = pastReviewAttempt.userAnswers?.[i];
               return (
-                <div key={i} className="review-item review-item--wrong">
+                <div key={i} className="review-item">
                   <div className="review-item__header">
                     <span className="review-item__number">Q{i + 1}</span>
                   </div>
@@ -1844,12 +1841,12 @@ export default function App() {
                   <div className="review-item__answers">
                     {q.options.map((opt, j) => {
                       let cls = "review-option";
-                      if (j === userAns) cls += " review-option--wrong";
+                      if (j === userAns) cls += " review-option--selected";
                       return (
                         <div key={j} className={cls}>
                           <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
                           <span>{opt}</span>
-                          {j === userAns && <span className="icon review-option__icon">{"\u{1F448}"} You chose</span>}
+                          {j === userAns && <span className="review-option__tag">{"\u{1F449}"} Your answer</span>}
                         </div>
                       );
                     })}

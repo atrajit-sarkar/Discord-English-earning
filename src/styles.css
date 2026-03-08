@@ -1773,6 +1773,26 @@ code {
   height: 0.9rem;
 }
 
+.review-option--selected {
+  background: rgba(88, 101, 242, 0.12);
+  border-color: rgba(88, 101, 242, 0.3);
+  color: var(--dc-blurple);
+  font-weight: 600;
+}
+
+.review-option--selected .review-option__letter {
+  background: var(--dc-blurple);
+  color: #fff;
+}
+
+.review-option__tag {
+  margin-left: auto;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  color: var(--dc-blurple);
+  flex-shrink: 0;
+}
+
 .review-item__explanation {
   background: var(--dc-bg-floating);
   border: 1px solid var(--dc-border);
