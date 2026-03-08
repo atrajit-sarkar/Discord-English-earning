@@ -486,6 +486,11 @@ async function saveResultToFirestore(payload, env, prefetchedDoc) {
     updatedFields.lastLogin = existing.lastLogin;
   }
 
+  // Preserve sharedQuizzes if it exists
+  if (existing.sharedQuizzes) {
+    updatedFields.sharedQuizzes = existing.sharedQuizzes;
+  }
+
   try {
     const patchRes = await fetch(`${docUrl}`, {
       method: "PATCH",
@@ -697,6 +702,19 @@ export default {
           return jsonResponse({ error: "No quiz history found to share." }, 404, origin, env);
         }
 
+        const prevShared = userDoc.existing.sharedQuizzes?.arrayValue?.values || [];
+        const alreadyShared = prevShared.some(
+          (value) => value?.stringValue === validation.payload.quizId
+        );
+        if (alreadyShared) {
+          return jsonResponse(
+            { error: "This quiz has already been shared." },
+            409,
+            origin,
+            env
+          );
+        }
+
         // Check share cooldown to prevent webhook spam
         const lastShareTime = new Date(
           userDoc.existing.lastShareTimestamp?.timestampValue || 0
@@ -754,10 +772,13 @@ export default {
           );
         }
 
-        // Record share timestamp to enforce cooldown
+        // Record share timestamp and add to sharedQuizzes
+        const sharedSet = new Set(prevShared.map((v) => v.stringValue));
+        sharedSet.add(validation.payload.quizId);
+
         try {
           await fetch(
-            `${userDoc.docUrl}?updateMask.fieldPaths=lastShareTimestamp`,
+            `${userDoc.docUrl}?updateMask.fieldPaths=lastShareTimestamp&updateMask.fieldPaths=sharedQuizzes`,
             {
               method: "PATCH",
               headers: {
@@ -768,6 +789,11 @@ export default {
                 fields: {
                   lastShareTimestamp: {
                     timestampValue: new Date().toISOString(),
+                  },
+                  sharedQuizzes: {
+                    arrayValue: {
+                      values: [...sharedSet].map((v) => ({ stringValue: v })),
+                    },
                   },
                 },
               }),

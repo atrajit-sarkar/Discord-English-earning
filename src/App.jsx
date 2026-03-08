@@ -21,6 +21,7 @@ const EMPTY_USER_STATS = Object.freeze({
   bestStreak: 0,
   quizHistory: [],
   seenQuizzes: [],
+  sharedQuizzes: [],
 });
 
 const QUIZZES = {
@@ -499,6 +500,9 @@ function normalizeUserStats(progress) {
   const seenQuizzes = new Set(
     Array.isArray(safeProgress.seenQuizzes) ? safeProgress.seenQuizzes : []
   );
+  const sharedQuizzes = Array.isArray(safeProgress.sharedQuizzes)
+    ? safeProgress.sharedQuizzes
+    : [];
 
   quizHistory.forEach((attempt) => {
     if (attempt?.quizId) {
@@ -523,6 +527,7 @@ function normalizeUserStats(progress) {
         : derivedBestStreak,
     quizHistory,
     seenQuizzes: Array.from(seenQuizzes),
+    sharedQuizzes,
   };
 }
 
@@ -653,7 +658,8 @@ export default function App() {
 
       /* Auto-start a quiz if a deep-link was pending */
       const pendingQuiz = sessionStorage.getItem(PENDING_QUIZ_KEY);
-      if (pendingQuiz && QUIZZES[pendingQuiz]) {
+      const isAlreadyAttempted = cachedProgress?.quizHistory?.some(h => h.quizId === pendingQuiz);
+      if (pendingQuiz && QUIZZES[pendingQuiz] && !isAlreadyAttempted) {
         sessionStorage.removeItem(PENDING_QUIZ_KEY);
         setCurrentQuizId(pendingQuiz);
         setCurrentQuestion(0);
@@ -1074,6 +1080,19 @@ export default function App() {
       }
 
       setWebhookStatus("success");
+
+      // Eagerly update local state so the button instantly changes to "Shared"
+      // even if the subsequent Firestore reload takes time or fails.
+      setUserStats((prev) => {
+        if (!prev) return prev;
+        const nextStats = normalizeUserStats({
+          ...prev,
+          sharedQuizzes: [...(prev.sharedQuizzes || []), currentQuizId],
+        });
+        writeStoredUserStats(user.id, nextStats);
+        return nextStats;
+      });
+
       // Reload stats from Firestore (worker saved the result)
       await loadUserStats(user, { syncProfile: false });
     } catch (error) {
@@ -1121,6 +1140,7 @@ export default function App() {
   }
 
   function handleStartQuiz(quizId) {
+    if (userStats?.quizHistory?.some(h => h.quizId === quizId)) return;
     setCurrentQuizId(quizId);
     setCurrentQuestion(0);
     setScore(0);
@@ -1166,6 +1186,18 @@ export default function App() {
   function handleViewPastAttempt(attempt) {
     setPastReviewAttempt(attempt);
     setQuizState("past-review");
+  }
+
+  function handleViewQuiz(attempt) {
+    setCurrentQuizId(attempt.quizId);
+    setScore(attempt.score);
+    setBestStreak(attempt.bestStreak);
+    setUserAnswers(attempt.userAnswers || []);
+    setPastReviewAttempt(attempt);
+    setQuizState("results");
+    setShowConfetti(false);
+    setSubmitError("");
+    setWebhookStatus("idle");
   }
 
   function handleQuizCardKeyDown(event, quizId) {
@@ -1634,13 +1666,19 @@ export default function App() {
                 disabled={
                   webhookStatus === "sending" ||
                   !relayConfigured ||
-                  (turnstileConfigured && !turnstileToken)
+                  (turnstileConfigured && !turnstileToken) ||
+                  userStatsView.sharedQuizzes.includes(currentQuizId)
                 }
               >
                 {webhookStatus === "sending" ? (
                   <>
                     <SpinnerIcon className="icon icon--spin" />
                     Sending...
+                  </>
+                ) : userStatsView.sharedQuizzes.includes(currentQuizId) ? (
+                  <>
+                    <CheckIcon className="icon" />
+                    Shared
                   </>
                 ) : (
                   <>
@@ -1653,7 +1691,13 @@ export default function App() {
               <button
                 type="button"
                 className="button button--primary"
-                onClick={() => setQuizState("review")}
+                onClick={() => {
+                  if (fetchedCorrectAnswers.length > 0) {
+                    setQuizState("review");
+                  } else {
+                    setQuizState("past-review");
+                  }
+                }}
               >
                 {"\u{1F50D}"} Review Answers
               </button>
@@ -1765,8 +1809,8 @@ export default function App() {
                     className="dashboard-quiz-card"
                     role="button"
                     tabIndex={0}
-                    onClick={() => handleStartQuiz(quiz.id)}
-                    onKeyDown={(event) => handleQuizCardKeyDown(event, quiz.id)}
+                    onClick={() => !attemptCount && handleStartQuiz(quiz.id)}
+                    onKeyDown={(event) => !attemptCount && handleQuizCardKeyDown(event, quiz.id)}
                   >
                     <div className="quiz-card__image-wrapper">
                       <img
@@ -1808,9 +1852,9 @@ export default function App() {
                         )}
                       </div>
                     </div>
-                    <div className="quiz-card__cta">
-                      <span>Start Quiz</span>
-                      <ArrowRightIcon className="icon" />
+                    <div className={`quiz-card__cta ${attemptCount > 0 ? "quiz-card__cta--disabled" : ""}`} style={attemptCount > 0 ? { opacity: 0.5, cursor: "not-allowed" } : {}}>
+                      <span>{attemptCount > 0 ? "Completed" : "Start Quiz"}</span>
+                      {attemptCount === 0 && <ArrowRightIcon className="icon" />}
                     </div>
                   </div>
                 );
@@ -1851,9 +1895,9 @@ export default function App() {
                         <button
                           type="button"
                           className="button button--ghost activity-item__review-btn"
-                          onClick={() => handleViewPastAttempt(h)}
+                          onClick={() => handleViewQuiz(h)}
                         >
-                          View Results
+                          View Quiz
                         </button>
                       )}
                     </div>
