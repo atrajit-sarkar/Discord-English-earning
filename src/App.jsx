@@ -766,12 +766,21 @@ export default function App() {
               });
               if (verifyRes.ok) {
                 const verifyData = await verifyRes.json();
+                console.log("[verify-access] Response:", verifyData);
                 hasAccess = verifyData.member && verifyData.channelAccess;
+                console.log("[verify-access] Has access:", hasAccess);
+              } else {
+                console.error("[verify-access] Failed:", verifyRes.status, await verifyRes.text());
               }
-            } catch { /* treat as no access */ }
+            } catch (err) {
+              console.error("[verify-access] Error:", err);
+            }
+          } else {
+            console.warn("[verify-access] Relay not configured");
           }
 
           if (isMountedRef.current) {
+            console.log("[verify-access] Setting isGuildMember to:", hasAccess);
             setIsGuildMember(hasAccess);
           }
 
@@ -808,12 +817,21 @@ export default function App() {
             });
             if (verifyRes.ok) {
               const verifyData = await verifyRes.json();
+              console.log("[verify-access] (stored token) Response:", verifyData);
               hasAccess = verifyData.member && verifyData.channelAccess;
+              console.log("[verify-access] (stored token) Has access:", hasAccess);
+            } else {
+              console.error("[verify-access] (stored token) Failed:", verifyRes.status, await verifyRes.text());
             }
-          } catch { /* treat as no access */ }
+          } catch (err) {
+            console.error("[verify-access] (stored token) Error:", err);
+          }
+        } else {
+          console.warn("[verify-access] (stored token) No token or relay not configured");
         }
 
         if (isMountedRef.current) {
+          console.log("[verify-access] (stored token) Setting isGuildMember to:", hasAccess);
           setIsGuildMember(hasAccess);
         }
 
@@ -1303,6 +1321,7 @@ export default function App() {
 
   /* ─── Join Discord Gate ─── */
   if (user && !isGuildMember) {
+    console.log("[Join Gate] User:", user?.username, "isGuildMember:", isGuildMember);
     return (
       <main className="login-page">
         <FloatingParticles />

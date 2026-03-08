@@ -647,11 +647,17 @@ export default {
             return jsonResponse({ ok: true, member: false, channelAccess: false }, 200, origin, env);
           }
           if (!memberRes.ok) {
-            return jsonResponse({ error: "Failed to check guild membership." }, 502, origin, env);
+            const errorText = await memberRes.text();
+            console.error(`[verify-access] Discord API error (status ${memberRes.status}):`, errorText);
+            return jsonResponse({ 
+              error: `Failed to check guild membership. Discord API returned ${memberRes.status}`,
+              details: errorText.slice(0, 200)
+            }, 502, origin, env);
           }
           const memberData = await memberRes.json();
           memberRoles = memberData.roles || [];
-        } catch {
+        } catch (err) {
+          console.error("[verify-access] Exception checking guild membership:", err);
           return jsonResponse({ error: "Failed to check guild membership." }, 502, origin, env);
         }
 
