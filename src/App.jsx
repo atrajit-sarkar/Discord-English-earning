@@ -27,96 +27,66 @@ const QUIZZES = {
     {
       question: 'A friendly cashier says, "Hey! How\'s it going?" What is the most natural, casual response?',
       options: ["I am functioning optimally, thank you.", "Not much, you?", "I do not know.", "It goes well."],
-      correct: 1,
-      explanation: '"Not much, you?" mirrors the casual tone perfectly.',
     },
     {
       question: "Someone is speaking very fast and you completely missed their point. What should you say?",
       options: ["I'm not sure I follow you.", "What is your meaning?", "Speak to me slower.", "I am confused by your words."],
-      correct: 0,
-      explanation: '"I\'m not sure I follow you" is polite and natural in conversation.',
     },
     {
       question: "You see a friend you haven't seen in three months. What do you say?",
       options: ["How are you existing?", "What is up?", "How have you been?", "Are you fine?"],
-      correct: 2,
-      explanation: '"How have you been?" naturally asks about the time since you last met.',
     },
     {
       question: 'Which of these is a casual way to say "Hello" when passing a coworker in the hallway?',
       options: ["Greetings to you.", "What's up?", "How do you do?", "I acknowledge you."],
-      correct: 1,
-      explanation: '"What\'s up?" is the go-to casual greeting in everyday English.',
     },
     {
       question: "You didn't hear what someone just said. What is the most polite, natural response?",
       options: ["Repeat it.", "What?", "Would you mind repeating that?", "Say again your words."],
-      correct: 2,
-      explanation: '"Would you mind repeating that?" is both polite and commonly used.',
     },
   ],
   "advanced-business": [
     {
       question: "In a formal meeting, how would you best express that you agree with a colleague's point?",
       options: ["I concur completely.", "You betcha.", "That is truth.", "I'm with you dog."],
-      correct: 0,
-      explanation: '"I concur completely" or simply "I agree" is professional and clear.'
     },
     {
       question: "You need to delay a project deadline. What is the most professional way to tell your manager?",
       options: ["I can't do this now.", "We need to push the deadline back.", "This is too much work.", "Give me more time."],
-      correct: 1,
-      explanation: '"We need to push the deadline back" is professional and direct.'
     },
     {
       question: "How do you politely interrupt someone in a meeting?",
       options: ["Stop talking.", "May I interject for a moment?", "Hold up.", "My turn."],
-      correct: 1,
-      explanation: '"May I interject for a moment?" is a polite and professional way to interrupt.'
     },
     {
       question: "When explaining a complex issue, how can you check for understanding?",
       options: ["Are you stupid?", "Do you understand me?", "Does that make sense?", "Get it?"],
-      correct: 2,
-      explanation: '"Does that make sense?" is a non-confrontational way to check understanding.'
     },
     {
       question: "How would you formally decline a meeting invitation?",
       options: ["No thanks.", "I'll pass.", "I am unable to attend due to prior commitments.", "Nah."],
-      correct: 2,
-      explanation: '"I am unable to attend due to prior commitments." is polite and formal.'
     }
   ],
   "nautical-idioms": [
     {
       question: "If a business owner says, \"Sales are dropping this quarter, so we need to ________ by cutting costs,\" which nautical idiom completes the sentence to mean preparing for a difficult situation?",
       options: ["Batten down the hatches", "Rock the boat", "Jump ship", "Go overboard"],
-      correct: 0,
-      explanation: '"Batten down the hatches" means to get ready for a difficult situation by preparing in every way possible. It comes from sailors securely closing a ship\'s hatches when a severe storm is approaching.',
     },
     {
       question: "If you want to compliment a manager by saying they control their business or organization very firmly and effectively, which nautical idiom would you use?",
       options: ["Steer the course", "Sail close to the wind", "Run a tight ship", "Anchor the team"],
-      correct: 2,
-      explanation: 'When someone \"runs a tight ship,\" it means they keep everything highly organized, disciplined, and functioning smoothly. Native speakers often use this in the workplace to describe a strict but highly effective leader.',
     },
     {
       question: "A coworker tells you, \"We have lots of major bookings ________ and are confident of making excellent profits.\" Which nautical phrase completes the sentence to mean that something is \"likely to happen soon\"?",
       options: ["On the horizon", "In the offing", "At the helm", "In the wake"],
-      correct: 1,
-      explanation: 'The \"offing\" was a nautical term for the part of the sea visible on the distant horizon. In modern English, if something is \"in the offing,\" it means it can be seen on the horizon and is likely to happen soon.',
     },
     {
       question: "What idiom would you use to describe a situation where you have no good choices, and are placed between two equally hazardous alternatives?",
       options: ["Caught in the doldrums", "Between the devil and the deep blue sea", "Lost at sea", "Up the creek without a paddle"],
-      correct: 1,
-      explanation: 'This proverb describes being trapped between two equally precarious situations. The \"devil\" was actually the outermost seam on the deck of a wooden ship, putting sailors dangerously close to falling into the deep ocean. Today it means being stuck between two bad options.',
     },
     {
       question: "You wake up feeling ill and need to call your boss to ask for a day off. Which nautical cliché would you use to describe feeling unwell?",
       options: ["All at sea", "In deep water", "Under the weather", "Adrift"],
-      correct: 2,
-      explanation: 'To be \"under the weather\" means to feel unwell. This expression originally referred to seasickness—suffering from nausea on board a ship because of heavy seas and bad weather. Today, it is a very common cliché to simply mean you are sick.',
     }
   ]
 };
@@ -466,13 +436,13 @@ function readStoredUser() {
 function writeStoredUser(user) {
   try {
     window.localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(user));
-  } catch {}
+  } catch { }
 }
 
 function clearStoredUser() {
   try {
     window.localStorage.removeItem(USER_STORAGE_KEY);
-  } catch {}
+  } catch { }
 }
 
 function getUserStatsStorageKey(userId) {
@@ -542,7 +512,7 @@ function writeStoredUserStats(userId, stats) {
       getUserStatsStorageKey(userId),
       JSON.stringify(normalizeUserStats(stats))
     );
-  } catch {}
+  } catch { }
 }
 
 /* ─── Main App ─── */
@@ -573,6 +543,9 @@ export default function App() {
   const turnstileWidgetIdRef = useRef(null);
   const [turnstileToken, setTurnstileToken] = useState("");
   const [turnstileError, setTurnstileError] = useState("");
+  const [fetchedCorrectAnswers, setFetchedCorrectAnswers] = useState([]);
+  const [fetchedExplanations, setFetchedExplanations] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const discordConfigured = !isPlaceholder(DISCORD_CLIENT_ID);
   const relayConfigured = !isPlaceholder(DISCORD_RELAY_URL);
@@ -714,7 +687,7 @@ export default function App() {
         if (!isMountedRef.current) return;
         setAuthError(
           oauthErrorDescription?.replace(/\+/g, " ") ||
-            "Discord login was cancelled or denied."
+          "Discord login was cancelled or denied."
         );
         clearStoredOauthResponse();
         finishLoading();
@@ -941,35 +914,70 @@ export default function App() {
     setQuestionKey((prev) => prev + 1);
   }
 
-  /* Finish quiz: record last answer, compute score, go to results */
+  /* Finish quiz: submit answers to worker to get score and explanations */
   async function handleFinishQuiz() {
     if (selectedAnswer === null) return;
     const allAnswers = [...userAnswers, selectedAnswer];
     setUserAnswers(allAnswers);
 
-    // Calculate score & streaks from all answers
-    let finalScore = 0;
-    let currentStreak = 0;
-    let maxStreak = 0;
-    allAnswers.forEach((ans, i) => {
-      if (ans === currentQuizData[i].correct) {
-        finalScore++;
-        currentStreak++;
-        maxStreak = Math.max(maxStreak, currentStreak);
-      } else {
-        currentStreak = 0;
-      }
-    });
-
-    setScore(finalScore);
-    setBestStreak(maxStreak);
-    setQuizState("results");
-
-    if (finalScore >= Math.ceil(currentQuizData.length * 0.6)) {
-      setShowConfetti(true);
+    if (!relayConfigured) {
+      // Offline / no-relay fallback (will not have explanations or correct scoring)
+      setScore(0);
+      setBestStreak(0);
+      setQuizState("results");
+      return;
     }
 
+    setIsSubmitting(true);
+    setQuizState("evaluating");
 
+    try {
+      const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === currentQuizId);
+
+      const response = await fetch(DISCORD_RELAY_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "submit",
+          userId: user.id,
+          username: user.username,
+          avatar: user.avatar,
+          quizId: currentQuizId,
+          quizTitle: quizMeta?.title ?? "Quiz",
+          siteBaseUrl: SITE_BASE_URL,
+          userAnswers: allAnswers,
+          turnstileToken,
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to submit quiz.");
+      }
+
+      const data = await response.json();
+      setScore(data.score ?? 0);
+      setBestStreak(data.bestStreak ?? 0);
+      setFetchedCorrectAnswers(data.answers ?? []);
+      setFetchedExplanations(data.explanations ?? []);
+
+      setQuizState("results");
+      if ((data.score ?? 0) >= Math.ceil(currentQuizData.length * 0.6)) {
+        setShowConfetti(true);
+      }
+
+      // Reload stats
+      void loadUserStats(user, { syncProfile: false });
+
+    } catch (error) {
+      console.error(error);
+      setQuizState("dashboard");
+      // Could show an error toast here
+    } finally {
+      setIsSubmitting(false);
+      if (turnstileConfigured) {
+        resetTurnstileChallenge();
+      }
+    }
   }
 
   async function sendResultsToDiscord() {
@@ -994,6 +1002,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          action: "share",
           userId: user.id,
           username: user.username,
           avatar: user.avatar,
@@ -1002,6 +1011,9 @@ export default function App() {
           siteBaseUrl: SITE_BASE_URL,
           userAnswers,
           turnstileToken,
+          score,
+          total: currentQuizData.length,
+          bestStreak,
         }),
       });
 
@@ -1037,6 +1049,8 @@ export default function App() {
     setShowConfetti(false);
     setCurrentQuizId(null);
     setUserAnswers([]);
+    setFetchedCorrectAnswers([]);
+    setFetchedExplanations([]);
   }
 
   function handleBackToDashboard() {
@@ -1050,6 +1064,8 @@ export default function App() {
     setQuestionKey(0);
     setCurrentQuizId(null);
     setUserAnswers([]);
+    setFetchedCorrectAnswers([]);
+    setFetchedExplanations([]);
   }
 
   function handleStartQuiz(quizId) {
@@ -1064,6 +1080,8 @@ export default function App() {
     setShowConfetti(false);
     setWebhookStatus("idle");
     setUserAnswers([]);
+    setFetchedCorrectAnswers([]);
+    setFetchedExplanations([]);
     setQuizState("quiz");
 
     // Mark quiz as seen so the NEW badge disappears (persisted in Firestore)
@@ -1256,10 +1274,10 @@ export default function App() {
                 type="button"
                 className="button button--success quiz-next-btn"
                 onClick={handleFinishQuiz}
-                disabled={selectedAnswer === null}
+                disabled={selectedAnswer === null || isSubmitting}
               >
-                Finish Quiz
-                <CheckIcon className="icon" />
+                {isSubmitting ? "Evaluating..." : "Finish Quiz"}
+                {!isSubmitting && <CheckIcon className="icon" />}
               </button>
             ) : (
               <button
@@ -1273,6 +1291,19 @@ export default function App() {
               </button>
             )}
           </div>
+        </section>
+      </main>
+    );
+  }
+
+  /* ─── Evaluating State ─── */
+  if (quizState === "evaluating") {
+    return (
+      <main className="page-shell">
+        <FloatingParticles />
+        <section className="card card--compact status-card">
+          <SpinnerIcon className="icon icon--spin icon--large" />
+          <p>Evaluating your answers securely...</p>
         </section>
       </main>
     );
@@ -1307,7 +1338,8 @@ export default function App() {
           <div className="review-list">
             {currentQuizData.map((q, i) => {
               const userAns = userAnswers[i];
-              const isCorrect = userAns === q.correct;
+              const correctAns = fetchedCorrectAnswers[i];
+              const isCorrect = userAns === correctAns;
               return (
                 <div key={i} className={`review-item ${isCorrect ? "review-item--correct" : "review-item--wrong"}`}>
                   <div className="review-item__header">
@@ -1320,20 +1352,20 @@ export default function App() {
                   <div className="review-item__answers">
                     {q.options.map((opt, j) => {
                       let cls = "review-option";
-                      if (j === q.correct) cls += " review-option--correct";
-                      if (j === userAns && j !== q.correct) cls += " review-option--wrong";
+                      if (j === correctAns) cls += " review-option--correct";
+                      if (j === userAns && j !== correctAns) cls += " review-option--wrong";
                       return (
                         <div key={j} className={cls}>
                           <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
                           <span>{opt}</span>
-                          {j === q.correct && <CheckIcon className="icon review-option__icon" />}
-                          {j === userAns && j !== q.correct && <ErrorIcon className="icon review-option__icon" />}
+                          {j === correctAns && <CheckIcon className="icon review-option__icon" />}
+                          {j === userAns && j !== correctAns && <ErrorIcon className="icon review-option__icon" />}
                         </div>
                       );
                     })}
                   </div>
                   <div className="review-item__explanation">
-                    <strong>{"\u{1F4A1}"} Explanation:</strong> {q.explanation}
+                    <strong>{"\u{1F4A1}"} Explanation:</strong> {fetchedExplanations[i] ?? "Loading..."}
                   </div>
                 </div>
               );
@@ -1386,33 +1418,27 @@ export default function App() {
           <div className="review-list">
             {pastQuizData.map((q, i) => {
               const userAns = pastReviewAttempt.userAnswers?.[i];
-              const isCorrect = userAns === q.correct;
               return (
-                <div key={i} className={`review-item ${isCorrect ? "review-item--correct" : "review-item--wrong"}`}>
+                <div key={i} className="review-item review-item--wrong">
                   <div className="review-item__header">
                     <span className="review-item__number">Q{i + 1}</span>
-                    <span className={`review-item__badge ${isCorrect ? "review-item__badge--correct" : "review-item__badge--wrong"}`}>
-                      {isCorrect ? "Correct" : "Incorrect"}
-                    </span>
                   </div>
                   <p className="review-item__question">{q.question}</p>
                   <div className="review-item__answers">
                     {q.options.map((opt, j) => {
                       let cls = "review-option";
-                      if (j === q.correct) cls += " review-option--correct";
-                      if (j === userAns && j !== q.correct) cls += " review-option--wrong";
+                      if (j === userAns) cls += " review-option--wrong";
                       return (
                         <div key={j} className={cls}>
                           <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
                           <span>{opt}</span>
-                          {j === q.correct && <CheckIcon className="icon review-option__icon" />}
-                          {j === userAns && j !== q.correct && <ErrorIcon className="icon review-option__icon" />}
+                          {j === userAns && <span className="icon review-option__icon">{"\u{1F448}"} You chose</span>}
                         </div>
                       );
                     })}
                   </div>
-                  <div className="review-item__explanation">
-                    <strong>{"\u{1F4A1}"} Explanation:</strong> {q.explanation}
+                  <div className="review-item__explanation" style={{ opacity: 0.7 }}>
+                    <em>Explanations and correct answers are only visible immediately after taking the quiz to prevent answer sharing.</em>
                   </div>
                 </div>
               );
@@ -1652,60 +1678,60 @@ export default function App() {
               {AVAILABLE_QUIZZES.map((quiz) => {
                 const attemptCount = recentQuizHistory.filter((h) => h.quizId === quiz.id).length;
                 return (
-                <div
-                  key={quiz.id}
-                  ref={(el) => { quizCardRefs.current[quiz.id] = el; }}
-                  className="dashboard-quiz-card"
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => handleStartQuiz(quiz.id)}
-                  onKeyDown={(event) => handleQuizCardKeyDown(event, quiz.id)}
-                >
-                  <div className="quiz-card__image-wrapper">
-                    <img
-                      src={quiz.image}
-                      alt=""
-                      aria-hidden="true"
-                      className="quiz-card__image"
-                      loading="lazy"
-                      decoding="async"
-                    />
-                    <span className="quiz-card__image-tag">{quiz.tagline}</span>
-                    {quiz.isNew && (!loadingUserStats || userStats) && !seenQuizIds.has(quiz.id) && (
-                      <span className="quiz-card__badge">New</span>
-                    )}
-                  </div>
-                  <div className="quiz-card__body">
-                    <div className="quiz-card__copy">
-                      <h3>{quiz.title}</h3>
-                      <p>{quiz.description}</p>
-                    </div>
-                    <div className="quiz-card__meta">
-                      <span className="meta-tag">
-                        <span className="meta-tag__label">Level</span>
-                        <span className="meta-tag__value">{quiz.level}</span>
-                      </span>
-                      <span className="meta-tag">
-                        <span className="meta-tag__label">Duration</span>
-                        <span className="meta-tag__value">{quiz.duration}</span>
-                      </span>
-                      <span className="meta-tag">
-                        <span className="meta-tag__label">Questions</span>
-                        <span className="meta-tag__value">{QUIZZES[quiz.id]?.length ?? 0}</span>
-                      </span>
-                      {attemptCount > 0 && (
-                        <span className="meta-tag meta-tag--accent">
-                          <span className="meta-tag__label">Attempts</span>
-                          <span className="meta-tag__value">{attemptCount}</span>
-                        </span>
+                  <div
+                    key={quiz.id}
+                    ref={(el) => { quizCardRefs.current[quiz.id] = el; }}
+                    className="dashboard-quiz-card"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => handleStartQuiz(quiz.id)}
+                    onKeyDown={(event) => handleQuizCardKeyDown(event, quiz.id)}
+                  >
+                    <div className="quiz-card__image-wrapper">
+                      <img
+                        src={quiz.image}
+                        alt=""
+                        aria-hidden="true"
+                        className="quiz-card__image"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                      <span className="quiz-card__image-tag">{quiz.tagline}</span>
+                      {quiz.isNew && (!loadingUserStats || userStats) && !seenQuizIds.has(quiz.id) && (
+                        <span className="quiz-card__badge">New</span>
                       )}
                     </div>
+                    <div className="quiz-card__body">
+                      <div className="quiz-card__copy">
+                        <h3>{quiz.title}</h3>
+                        <p>{quiz.description}</p>
+                      </div>
+                      <div className="quiz-card__meta">
+                        <span className="meta-tag">
+                          <span className="meta-tag__label">Level</span>
+                          <span className="meta-tag__value">{quiz.level}</span>
+                        </span>
+                        <span className="meta-tag">
+                          <span className="meta-tag__label">Duration</span>
+                          <span className="meta-tag__value">{quiz.duration}</span>
+                        </span>
+                        <span className="meta-tag">
+                          <span className="meta-tag__label">Questions</span>
+                          <span className="meta-tag__value">{QUIZZES[quiz.id]?.length ?? 0}</span>
+                        </span>
+                        {attemptCount > 0 && (
+                          <span className="meta-tag meta-tag--accent">
+                            <span className="meta-tag__label">Attempts</span>
+                            <span className="meta-tag__value">{attemptCount}</span>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="quiz-card__cta">
+                      <span>Start Quiz</span>
+                      <ArrowRightIcon className="icon" />
+                    </div>
                   </div>
-                  <div className="quiz-card__cta">
-                    <span>Start Quiz</span>
-                    <ArrowRightIcon className="icon" />
-                  </div>
-                </div>
                 );
               })}
             </div>
@@ -1719,37 +1745,37 @@ export default function App() {
                 {recentQuizHistory.slice(-5).reverse().map((h, i) => {
                   const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === h.quizId);
                   return (
-                  <div key={i} className="activity-item">
-                    {quizMeta && (
-                      <button
-                        type="button"
-                        className="activity-item__quiz-name"
-                        onClick={() => scrollToQuizCard(h.quizId)}
-                        title={`Scroll to ${quizMeta.title}`}
-                      >
-                        {quizMeta.title}
-                      </button>
-                    )}
-                    <div className="activity-item__score">
-                      <strong>{h.score}/{h.total}</strong>
-                      <span>({h.percentage}%)</span>
+                    <div key={i} className="activity-item">
+                      {quizMeta && (
+                        <button
+                          type="button"
+                          className="activity-item__quiz-name"
+                          onClick={() => scrollToQuizCard(h.quizId)}
+                          title={`Scroll to ${quizMeta.title}`}
+                        >
+                          {quizMeta.title}
+                        </button>
+                      )}
+                      <div className="activity-item__score">
+                        <strong>{h.score}/{h.total}</strong>
+                        <span>({h.percentage}%)</span>
+                      </div>
+                      <span className={`level-badge level-badge--${h.level?.toLowerCase()}`} style={{ fontSize: "0.7rem", padding: "0.15rem 0.55rem", marginTop: 0 }}>
+                        {h.level}
+                      </span>
+                      <span className="activity-item__date">
+                        {h.completedAt ? new Date(h.completedAt).toLocaleDateString() : "—"}
+                      </span>
+                      {h.userAnswers?.length > 0 && (
+                        <button
+                          type="button"
+                          className="button button--ghost activity-item__review-btn"
+                          onClick={() => handleViewPastAttempt(h)}
+                        >
+                          View Results
+                        </button>
+                      )}
                     </div>
-                    <span className={`level-badge level-badge--${h.level?.toLowerCase()}`} style={{ fontSize: "0.7rem", padding: "0.15rem 0.55rem", marginTop: 0 }}>
-                      {h.level}
-                    </span>
-                    <span className="activity-item__date">
-                      {h.completedAt ? new Date(h.completedAt).toLocaleDateString() : "—"}
-                    </span>
-                    {h.userAnswers?.length > 0 && (
-                      <button
-                        type="button"
-                        className="button button--ghost activity-item__review-btn"
-                        onClick={() => handleViewPastAttempt(h)}
-                      >
-                        View Results
-                      </button>
-                    )}
-                  </div>
                   );
                 })}
               </div>

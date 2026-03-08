@@ -8,12 +8,7 @@ const RESULT_LEVELS = [
   { minPercentage: 0, level: "Beginner", emoji: "\u{1F4DA}", color: 0xf47b67 },
 ];
 
-/* ── Server-side answer keys (source of truth) ── */
-const QUIZ_ANSWER_KEYS = {
-  "everyday-spoken":    [1, 0, 2, 1, 2],
-  "advanced-business":  [0, 1, 1, 2, 2],
-  "nautical-idioms":    [0, 2, 1, 1, 2],
-};
+/* ── Server-side answer keys are now in Firestore ── */
 
 /* ── Helpers ── */
 
@@ -89,8 +84,8 @@ function getResultSummary(score, total) {
 
 /* ── Score computation (server-side) ── */
 
-function computeScore(quizId, userAnswers) {
-  const key = QUIZ_ANSWER_KEYS[quizId];
+function computeScore(quizData, userAnswers) {
+  const key = quizData.answers;
   if (!key) {
     return null;
   }
@@ -105,7 +100,7 @@ function computeScore(quizId, userAnswers) {
 
   for (let i = 0; i < key.length; i++) {
     if (!Number.isInteger(userAnswers[i])) return null;
-    if (userAnswers[i] === key[i]) {
+    if (userAnswers[i] === Number(key[i].integerValue ?? key[i].doubleValue ?? 0)) {
       score++;
       streak++;
       bestStreak = Math.max(bestStreak, streak);
@@ -122,7 +117,7 @@ function computeScore(quizId, userAnswers) {
 
 /* ── Payload validation ── */
 
-function validatePayload(body, env) {
+async function validatePayload(body, env, isShare = false) {
   if (!body || typeof body !== "object") {
     return { ok: false, error: "Invalid JSON body." };
   }
@@ -141,11 +136,6 @@ function validatePayload(body, env) {
     return { ok: false, error: "Invalid quiz id." };
   }
 
-  const computed = computeScore(quizId, body.userAnswers);
-  if (!computed) {
-    return { ok: false, error: "Invalid quiz answers." };
-  }
-
   let siteBaseUrl;
   try {
     siteBaseUrl = new URL(body.siteBaseUrl);
@@ -162,24 +152,49 @@ function validatePayload(body, env) {
   siteBaseUrl.hash = "";
   siteBaseUrl.searchParams.set("quiz", quizId);
 
-  return {
-    ok: true,
-    payload: {
-      userId,
-      username,
-      quizId,
-      quizTitle,
-      quizLink: siteBaseUrl.toString(),
-      avatar,
+  let payload = {
+    userId,
+    username,
+    quizId,
+    quizTitle,
+    quizLink: siteBaseUrl.toString(),
+    avatar,
+    userAnswers: body.userAnswers,
+    turnstileToken:
+      typeof body.turnstileToken === "string" ? body.turnstileToken.trim() : "",
+  };
+
+  if (!isShare) {
+    const quizData = await getQuizDataFromFirestore(quizId, env);
+    if (!quizData) {
+      return { ok: false, error: "Could not fetch quiz data." };
+    }
+
+    const computed = computeScore(quizData, body.userAnswers);
+    if (!computed) {
+      return { ok: false, error: "Invalid quiz answers." };
+    }
+
+    payload = {
+      ...payload,
       score: computed.score,
       total: computed.total,
       bestStreak: computed.bestStreak,
       percentage: computed.percentage,
       level: computed.level,
-      userAnswers: body.userAnswers,
-      turnstileToken:
-        typeof body.turnstileToken === "string" ? body.turnstileToken.trim() : "",
-    },
+      answers: quizData.answers.map(a => Number(a.integerValue ?? a.doubleValue ?? 0)),
+      explanations: quizData.explanations.map(e => e.stringValue ?? ""),
+    };
+  } else {
+    // For share action, we do NOT trust the frontend. We will fetch the latest saved result from Firestore in the handler.
+    payload = {
+      ...payload
+    };
+  }
+
+  return {
+    ok: true,
+    payload,
   };
 }
 
@@ -330,17 +345,43 @@ function toFirestoreValue(val) {
   return { stringValue: String(val) };
 }
 
-async function saveResultToFirestore(payload, env) {
+async function getQuizDataFromFirestore(quizId, env) {
   const accessToken = await getFirebaseAccessToken(env);
   if (!accessToken) {
-    return { saved: false, reason: "Service account not configured." };
+    return null;
   }
 
   const projectId = env.FIREBASE_PROJECT_ID;
-  const docUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/English/${encodeURIComponent(payload.userId)}`;
+  const docUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/QuizzesData/${encodeURIComponent(quizId)}`;
 
-  // Read existing document
-  let existing = {};
+  try {
+    const getRes = await fetch(docUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (getRes.ok) {
+      const doc = await getRes.json();
+      if (doc.fields && doc.fields.answers && doc.fields.explanations) {
+        return {
+          answers: doc.fields.answers.arrayValue?.values || [],
+          explanations: doc.fields.explanations.arrayValue?.values || [],
+        };
+      }
+    }
+  } catch (err) {
+    console.error("getQuizDataFromFirestore error:", err);
+  }
+  return null;
+}
+
+async function getUserDocumentFromFirestore(userId, env) {
+  const accessToken = await getFirebaseAccessToken(env);
+  if (!accessToken) {
+    return null;
+  }
+
+  const projectId = env.FIREBASE_PROJECT_ID;
+  const docUrl = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/English/${encodeURIComponent(userId)}`;
+
   try {
     const getRes = await fetch(docUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -348,11 +389,20 @@ async function saveResultToFirestore(payload, env) {
     if (getRes.ok) {
       const doc = await getRes.json();
       if (doc.fields) {
-        existing = doc.fields;
+        return { existing: doc.fields, accessToken, docUrl };
       }
     }
-  } catch {
-    // document may not exist yet
+  } catch (err) {
+    // Document might not exist
+  }
+  return { existing: {}, accessToken, docUrl };
+}
+
+async function saveResultToFirestore(payload, env) {
+  const { existing, accessToken, docUrl } = await getUserDocumentFromFirestore(payload.userId, env);
+
+  if (!accessToken) {
+    return { saved: false, reason: "Service account not configured." };
   }
 
   const prevTotalAttempts = Number(existing.totalAttempts?.integerValue ?? 0);
@@ -490,93 +540,143 @@ export default {
     }
 
     try {
-    if (request.method !== "POST") {
-      return jsonResponse({ error: "Method not allowed." }, 405, origin, env);
-    }
+      if (request.method !== "POST") {
+        return jsonResponse({ error: "Method not allowed." }, 405, origin, env);
+      }
 
-    if (!env.DISCORD_WEBHOOK_URL) {
-      return jsonResponse(
-        { error: "Missing DISCORD_WEBHOOK_URL secret." },
-        500,
-        origin,
+      if (!env.DISCORD_WEBHOOK_URL) {
+        return jsonResponse(
+          { error: "Missing DISCORD_WEBHOOK_URL secret." },
+          500,
+          origin,
+          env
+        );
+      }
+
+      const corsHeaders = getCorsHeaders(origin, env);
+      if (!corsHeaders["access-control-allow-origin"]) {
+        return jsonResponse({ error: "Origin not allowed." }, 403, origin, env);
+      }
+
+      let body;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonResponse({ error: "Request body must be JSON." }, 400, origin, env);
+      }
+
+      const action = body.action || "submit";
+
+      const validation = await validatePayload(body, env, action === "share");
+      if (!validation.ok) {
+        return jsonResponse({ error: validation.error }, 400, origin, env);
+      }
+
+      if (env.TURNSTILE_SECRET_KEY && !validation.payload.turnstileToken) {
+        return jsonResponse(
+          { error: "Missing anti-spam token." },
+          400,
+          origin,
+          env
+        );
+      }
+
+      const turnstileResult = await verifyTurnstile(
+        validation.payload.turnstileToken,
+        request.headers.get("CF-Connecting-IP") ?? "",
         env
       );
-    }
 
-    const corsHeaders = getCorsHeaders(origin, env);
-    if (!corsHeaders["access-control-allow-origin"]) {
-      return jsonResponse({ error: "Origin not allowed." }, 403, origin, env);
-    }
+      if (!turnstileResult.success) {
+        return jsonResponse(
+          { error: "Anti-spam verification failed." },
+          403,
+          origin,
+          env
+        );
+      }
 
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return jsonResponse({ error: "Request body must be JSON." }, 400, origin, env);
-    }
+      if (action === "submit") {
+        // Save verified result to Firestore using admin credentials
+        const saveResult = await saveResultToFirestore(validation.payload, env);
+        if (!saveResult.saved) {
+          return jsonResponse(
+            { error: saveResult.reason },
+            500,
+            origin,
+            env
+          );
+        }
 
-    const validation = validatePayload(body, env);
-    if (!validation.ok) {
-      return jsonResponse({ error: validation.error }, 400, origin, env);
-    }
+        return jsonResponse({
+          ok: true,
+          score: validation.payload.score,
+          total: validation.payload.total,
+          bestStreak: validation.payload.bestStreak,
+          percentage: validation.payload.percentage,
+          level: validation.payload.level,
+          answers: validation.payload.answers,
+          explanations: validation.payload.explanations
+        }, 200, origin, env);
+      }
 
-    if (env.TURNSTILE_SECRET_KEY && !validation.payload.turnstileToken) {
-      return jsonResponse(
-        { error: "Missing anti-spam token." },
-        400,
-        origin,
-        env
-      );
-    }
+      if (action === "share") {
 
-    const turnstileResult = await verifyTurnstile(
-      validation.payload.turnstileToken,
-      request.headers.get("CF-Connecting-IP") ?? "",
-      env
-    );
+        // Secure the share payload by fetching it directly from their Firestore document.
+        // Do not trust the client's score to prevent forged webhook spam.
+        const userDoc = await getUserDocumentFromFirestore(validation.payload.userId, env);
+        if (!userDoc || !userDoc.existing || !userDoc.existing.quizHistory) {
+          return jsonResponse({ error: "No quiz history found to share." }, 404, origin, env);
+        }
 
-    if (!turnstileResult.success) {
-      return jsonResponse(
-        { error: "Anti-spam verification failed." },
-        403,
-        origin,
-        env
-      );
-    }
+        const history = userDoc.existing.quizHistory.arrayValue?.values || [];
+        // Grab the most recent attempt for this specific quizId
+        const recentAttempts = history
+          .map(h => h.mapValue?.fields)
+          .filter(f => f?.quizId?.stringValue === validation.payload.quizId)
+          .sort((a, b) => {
+            const dateA = new Date(a.completedAt?.stringValue || 0);
+            const dateB = new Date(b.completedAt?.stringValue || 0);
+            return dateB - dateA; // descending
+          });
 
-    // Save verified result to Firestore using admin credentials
-    const saveResult = await saveResultToFirestore(validation.payload, env);
-    if (!saveResult.saved) {
-      return jsonResponse(
-        { error: saveResult.reason },
-        500,
-        origin,
-        env
-      );
-    }
+        if (recentAttempts.length === 0) {
+          return jsonResponse({ error: "No completed score found for this quiz to share." }, 403, origin, env);
+        }
 
-    const discordResponse = await fetch(env.DISCORD_WEBHOOK_URL, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(buildDiscordPayload(validation.payload)),
-    });
+        const verifiedAttempt = recentAttempts[0];
+        const verifiedPayload = {
+          ...validation.payload,
+          score: Number(verifiedAttempt.score?.integerValue ?? verifiedAttempt.score?.doubleValue ?? 0),
+          total: Number(verifiedAttempt.total?.integerValue ?? verifiedAttempt.total?.doubleValue ?? 0),
+          bestStreak: Number(verifiedAttempt.bestStreak?.integerValue ?? verifiedAttempt.bestStreak?.doubleValue ?? 0),
+        };
 
-    if (!discordResponse.ok) {
-      const errorText = await discordResponse.text();
-      return jsonResponse(
-        {
-          error: "Discord webhook request failed.",
-          details: errorText.slice(0, 300),
-        },
-        502,
-        origin,
-        env
-      );
-    }
+        const discordResponse = await fetch(env.DISCORD_WEBHOOK_URL, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(buildDiscordPayload(verifiedPayload)),
+        });
 
-    return jsonResponse({ ok: true }, 200, origin, env);
+        if (!discordResponse.ok) {
+          const errorText = await discordResponse.text();
+          return jsonResponse(
+            {
+              error: "Discord webhook request failed.",
+              details: errorText.slice(0, 300),
+            },
+            502,
+            origin,
+            env
+          );
+        }
+
+        return jsonResponse({ ok: true }, 200, origin, env);
+      }
+
+      return jsonResponse({ error: "Invalid action." }, 400, origin, env);
 
     } catch (err) {
       console.error("Unhandled worker error:", err);
