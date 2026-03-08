@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Access Request Review</title>
+  <style>
+    :root {
+      --dc-background-primary: #313338;
+      --dc-background-secondary: #2b2d31;
+      --dc-background-tertiary: #1e1f22;
+      --dc-text-normal: #dbdee1;
+      --dc-text-muted: #949ba4;
+      --dc-text-secondary: #b5bac1;
+      --dc-green: #23a559;
+      --dc-red: #ed4245;
+      --dc-blurple: #5865f2;
+      --dc-yellow: #f0b232;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--dc-background-tertiary);
+      color: var(--dc-text-normal);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .card {
+      background: var(--dc-background-primary);
+      border-radius: 12px;
+      padding: 2rem;
+      max-width: 500px;
+      width: 100%;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    .loading, .error, .success {
+      text-align: center;
+      padding: 2rem 0;
+    }
+
+    .loading .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--dc-background-secondary);
+      border-top-color: var(--dc-blurple);
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 1rem;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .error { color: var(--dc-red); }
+    .success { color: var(--dc-green); }
+
+    .profile {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .avatar {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: var(--dc-background-secondary);
+    }
+
+    .profile-info h2 {
+      font-size: 1.25rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .profile-info .user-id {
+      color: var(--dc-text-muted);
+      font-size: 0.85rem;
+    }
+
+    .section {
+      margin-bottom: 1.5rem;
+    }
+
+    .section-label {
+      color: var(--dc-text-muted);
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.5rem;
+    }
+
+    .reason-box {
+      background: var(--dc-background-secondary);
+      padding: 1rem;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .meta {
+      display: flex;
+      gap: 1.5rem;
+      color: var(--dc-text-muted);
+      font-size: 0.85rem;
+    }
+
+    .status {
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .status--pending {
+      background: rgba(240, 178, 50, 0.2);
+      color: var(--dc-yellow);
+    }
+
+    .status--approved {
+      background: rgba(35, 165, 89, 0.2);
+      color: var(--dc-green);
+    }
+
+    .status--denied {
+      background: rgba(237, 66, 69, 0.2);
+      color: var(--dc-red);
+    }
+
+    .actions {
+      display: flex;
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+
+    .btn {
+      flex: 1;
+      padding: 0.75rem 1.5rem;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn--approve {
+      background: var(--dc-green);
+      color: white;
+    }
+
+    .btn--approve:hover:not(:disabled) {
+      background: #1e8e4c;
+    }
+
+    .btn--deny {
+      background: var(--dc-red);
+      color: white;
+    }
+
+    .btn--deny:hover:not(:disabled) {
+      background: #c93b3e;
+    }
+
+    .divider {
+      height: 1px;
+      background: var(--dc-background-secondary);
+      margin: 1.5rem 0;
+    }
+
+    .result-message {
+      text-align: center;
+      padding: 1rem;
+      border-radius: 8px;
+      margin-top: 1rem;
+    }
+
+    .result-message--success {
+      background: rgba(35, 165, 89, 0.2);
+      color: var(--dc-green);
+    }
+
+    .result-message--error {
+      background: rgba(237, 66, 69, 0.2);
+      color: var(--dc-red);
+    }
+  </style>
+</head>
+<body>
+  <div class="card" id="app">
+    <div class="loading">
+      <div class="spinner"></div>
+      <p>Loading request...</p>
+    </div>
+  </div>
+
+  <script>
+    const WORKER_URL = 'https://discord-english-quiz-relay.atrajit-sarkar.workers.dev';
+    const app = document.getElementById('app');
+
+    // Get request ID from URL
+    const params = new URLSearchParams(window.location.search);
+    const requestId = params.get('id');
+
+    if (!requestId) {
+      app.innerHTML = `
+        <div class="error">
+          <h2>❌ Invalid Link</h2>
+          <p>No request ID provided.</p>
+        </div>
+      `;
+    } else {
+      loadRequest();
+    }
+
+    async function loadRequest() {
+      try {
+        const response = await fetch(WORKER_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'get-request', requestId }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to load request');
+        }
+
+        renderRequest(data.request);
+      } catch (err) {
+        app.innerHTML = `
+          <div class="error">
+            <h2>❌ Error</h2>
+            <p>${err.message}</p>
+          </div>
+        `;
+      }
+    }
+
+    function renderRequest(request) {
+      const isPending = request.status === 'pending';
+      const statusClass = `status--${request.status}`;
+      const createdDate = new Date(request.createdAt).toLocaleString();
+
+      app.innerHTML = `
+        <div class="profile">
+          <img
+            class="avatar"
+            src="${request.avatar || 'https://cdn.discordapp.com/embed/avatars/0.png'}"
+            alt="${request.username}"
+          />
+          <div class="profile-info">
+            <h2>${escapeHtml(request.username)}</h2>
+            <span class="user-id">ID: ${request.discordUserId}</span>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-label">Reason for Access</div>
+          <div class="reason-box">${escapeHtml(request.reason)}</div>
+        </div>
+
+        <div class="meta">
+          <span>📅 ${createdDate}</span>
+          <span class="status ${statusClass}">${request.status}</span>
+        </div>
+
+        ${isPending ? `
+          <div class="divider"></div>
+          <div class="actions">
+            <button class="btn btn--approve" onclick="handleAction('approve')">
+              ✅ Approve
+            </button>
+            <button class="btn btn--deny" onclick="handleAction('deny')">
+              ❌ Deny
+            </button>
+          </div>
+          <div id="result"></div>
+        ` : `
+          <div class="divider"></div>
+          <div class="result-message result-message--${request.status === 'approved' ? 'success' : 'error'}">
+            ${request.status === 'approved' ? '✅ This request has been approved.' : '❌ This request has been denied.'}
+          </div>
+        `}
+      `;
+    }
+
+    async function handleAction(action) {
+      const buttons = document.querySelectorAll('.btn');
+      buttons.forEach(btn => btn.disabled = true);
+
+      const resultDiv = document.getElementById('result');
+      resultDiv.innerHTML = '<p style="text-align: center; color: var(--dc-text-muted);">Processing...</p>';
+
+      try {
+        const response = await fetch(WORKER_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: action === 'approve' ? 'approve-request' : 'deny-request',
+            requestId,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Action failed');
+        }
+
+        resultDiv.innerHTML = `
+          <div class="result-message result-message--success">
+            ${action === 'approve' ? '✅ Access approved! User has been notified.' : '❌ Request denied. User has been notified.'}
+          </div>
+        `;
+
+        // Hide action buttons
+        document.querySelector('.actions').style.display = 'none';
+
+        // Reload after 2 seconds
+        setTimeout(() => loadRequest(), 2000);
+      } catch (err) {
+        resultDiv.innerHTML = `
+          <div class="result-message result-message--error">
+            ❌ Error: ${err.message}
+          </div>
+        `;
+        buttons.forEach(btn => btn.disabled = false);
+      }
+    }
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+  </script>
+</body>
+</html>
