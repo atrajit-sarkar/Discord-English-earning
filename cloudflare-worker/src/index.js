@@ -607,6 +607,112 @@ export default {
 
       const action = body.action || "submit";
 
+      /* ── bot-diag: check bot's own permissions (temporary diagnostic) ── */
+      if (action === "bot-diag") {
+        if (!env.DISCORD_BOT_TOKEN) {
+          return jsonResponse({ error: "Bot token not configured." }, 500, origin, env);
+        }
+
+        const results = {};
+
+        // Check bot's own identity
+        try {
+          const meRes = await fetch("https://discord.com/api/users/@me", {
+            headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` },
+          });
+          results.botIdentity = { status: meRes.status, data: meRes.ok ? await meRes.json() : await meRes.text() };
+        } catch (err) {
+          results.botIdentity = { error: err.message };
+        }
+
+        // Check bot's guild membership
+        try {
+          const guildRes = await fetch(
+            `https://discord.com/api/guilds/${REQUIRED_GUILD_ID}`,
+            { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
+          );
+          if (guildRes.ok) {
+            const guild = await guildRes.json();
+            results.guild = { status: guildRes.status, name: guild.name, id: guild.id };
+          } else {
+            results.guild = { status: guildRes.status, error: await guildRes.text() };
+          }
+        } catch (err) {
+          results.guild = { error: err.message };
+        }
+
+        // Check bot's own member info (to see its roles)
+        try {
+          const botId = results.botIdentity?.data?.id;
+          if (botId) {
+            const memberRes = await fetch(
+              `https://discord.com/api/guilds/${REQUIRED_GUILD_ID}/members/${botId}`,
+              { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
+            );
+            if (memberRes.ok) {
+              const member = await memberRes.json();
+              results.botMember = { status: memberRes.status, roles: member.roles, nick: member.nick };
+            } else {
+              results.botMember = { status: memberRes.status, error: await memberRes.text() };
+            }
+          }
+        } catch (err) {
+          results.botMember = { error: err.message };
+        }
+
+        // Check bot's permissions for the guild
+        try {
+          const rolesRes = await fetch(
+            `https://discord.com/api/guilds/${REQUIRED_GUILD_ID}/roles`,
+            { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
+          );
+          if (rolesRes.ok) {
+            const roles = await rolesRes.json();
+            const botRoles = results.botMember?.roles || [];
+            const botRoleDetails = roles.filter(r => botRoles.includes(r.id) || r.id === REQUIRED_GUILD_ID);
+            results.botRoles = botRoleDetails.map(r => ({ id: r.id, name: r.name, permissions: r.permissions, position: r.position }));
+            
+            const targetRole = roles.find(r => r.id === ACCESS_ROLE_ID);
+            results.targetRole = targetRole ? { id: targetRole.id, name: targetRole.name, position: targetRole.position } : "NOT FOUND";
+            
+            // Check if bot has MANAGE_ROLES
+            let botPerms = 0n;
+            for (const r of botRoleDetails) {
+              botPerms |= BigInt(r.permissions);
+            }
+            results.hasManageRoles = Boolean(botPerms & 0x10000000n);
+            results.hasAdmin = Boolean(botPerms & ADMINISTRATOR_BIT);
+          } else {
+            results.roles = { status: rolesRes.status, error: await rolesRes.text() };
+          }
+        } catch (err) {
+          results.roles = { error: err.message };
+        }
+
+        // Try a direct role add test on a test user if provided
+        const testUserId = typeof body.testUserId === "string" ? body.testUserId.trim() : "";
+        if (testUserId) {
+          try {
+            const testRoleRes = await fetch(
+              `https://discord.com/api/v10/guilds/${REQUIRED_GUILD_ID}/members/${testUserId}/roles/${ACCESS_ROLE_ID}`,
+              {
+                method: "PUT",
+                headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` },
+              }
+            );
+            results.roleTest = {
+              status: testRoleRes.status,
+              ok: testRoleRes.ok || testRoleRes.status === 204,
+              body: testRoleRes.status !== 204 ? await testRoleRes.text() : "204 No Content (success)",
+            };
+          } catch (err) {
+            results.roleTest = { error: err.message };
+          }
+        }
+
+        return jsonResponse({ ok: true, diag: results }, 200, origin, env);
+      }
+
       /* ── verify-access: check guild membership + channel access ── */
       if (action === "verify-access") {
         if (!env.DISCORD_BOT_TOKEN) {
@@ -983,25 +1089,44 @@ export default {
           return jsonResponse({ error: `Request already ${currentStatus}.` }, 400, origin, env);
         }
 
-        // Add role to user
+        // Add role to user — first get current roles, then PATCH with the new one added
         try {
-          const roleRes = await fetch(
-            `https://discord.com/api/guilds/${REQUIRED_GUILD_ID}/members/${discordUserId}/roles/${ACCESS_ROLE_ID}`,
+          // Get current member roles
+          const memberRes = await fetch(
+            `https://discord.com/api/v10/guilds/${REQUIRED_GUILD_ID}/members/${discordUserId}`,
+            { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
+          );
+          if (!memberRes.ok) {
+            const errText = await memberRes.text();
+            console.error("[approve] Failed to get member:", memberRes.status, errText);
+            return jsonResponse({ error: `User not found in guild. Discord: ${memberRes.status}` }, 502, origin, env);
+          }
+          const memberData = await memberRes.json();
+          const currentRoles = memberData.roles || [];
+
+          // Add the target role if not already present
+          const newRoles = currentRoles.includes(ACCESS_ROLE_ID) ? currentRoles : [...currentRoles, ACCESS_ROLE_ID];
+
+          // PATCH the member with updated roles
+          const patchRes = await fetch(
+            `https://discord.com/api/v10/guilds/${REQUIRED_GUILD_ID}/members/${discordUserId}`,
             {
-              method: "PUT",
+              method: "PATCH",
               headers: {
                 Authorization: `Bot ${env.DISCORD_BOT_TOKEN}`,
                 "Content-Type": "application/json",
                 "X-Audit-Log-Reason": "Access request approved via quiz app",
               },
+              body: JSON.stringify({ roles: newRoles }),
             }
           );
 
-          if (!roleRes.ok && roleRes.status !== 204) {
-            const errText = await roleRes.text();
-            console.error("Failed to add role:", roleRes.status, errText);
-            return jsonResponse({ error: `Failed to grant role. Discord: ${roleRes.status} - ${errText.slice(0, 200)}` }, 502, origin, env);
+          if (!patchRes.ok) {
+            const errText = await patchRes.text();
+            console.error("[approve] Failed to update roles:", patchRes.status, errText);
+            return jsonResponse({ error: `Failed to grant role. Discord: ${patchRes.status} - ${errText.slice(0, 200)}` }, 502, origin, env);
           }
+          console.log("[approve] Role added successfully via PATCH, status:", patchRes.status);
         } catch (err) {
           console.error("Error adding role:", err);
           return jsonResponse({ error: "Failed to grant role: " + err.message }, 502, origin, env);
