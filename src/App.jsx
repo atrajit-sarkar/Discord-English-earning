@@ -1020,9 +1020,7 @@ export default function App() {
           quizId: currentQuizId,
           quizTitle,
           siteBaseUrl: SITE_BASE_URL,
-          score,
-          total: currentQuizData.length,
-          bestStreak,
+          userAnswers,
           turnstileToken,
         }),
       });
