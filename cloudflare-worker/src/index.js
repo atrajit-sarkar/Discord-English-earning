@@ -654,20 +654,7 @@ export default {
       }
 
       if (action === "submit") {
-        // Check quiz submission cooldown
         const userDoc = await getUserDocumentFromFirestore(validation.payload.userId, env);
-        if (userDoc?.existing?.quizHistory?.arrayValue?.values) {
-          const history = userDoc.existing.quizHistory.arrayValue.values;
-          const lastAttemptTime = history
-            .map(h => h.mapValue?.fields)
-            .reduce((latest, f) => {
-              const t = new Date(f.completedAt?.stringValue || 0).getTime();
-              return t > latest ? t : latest;
-            }, 0);
-          if (lastAttemptTime && Date.now() - lastAttemptTime < SUBMIT_COOLDOWN_MS) {
-            return jsonResponse({ error: "Please wait before taking another quiz." }, 429, origin, env);
-          }
-        }
 
         // Save verified result to Firestore using admin credentials
         const saveResult = await saveResultToFirestore(validation.payload, env, userDoc);
