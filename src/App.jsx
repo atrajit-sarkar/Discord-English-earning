@@ -951,14 +951,16 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error("Failed to submit quiz.");
+        const errBody = await response.json().catch(() => ({}));
+        throw new Error(errBody.error || "Failed to submit quiz.");
       }
 
       const data = await response.json();
       setScore(data.score ?? 0);
       setBestStreak(data.bestStreak ?? 0);
-      setFetchedCorrectAnswers(data.answers ?? []);
-      setFetchedExplanations(data.explanations ?? []);
+      const results = data.results ?? [];
+      setFetchedCorrectAnswers(results.map(r => r.correctIndex));
+      setFetchedExplanations(results.map(r => r.explanation ?? ""));
 
       setQuizState("results");
       if ((data.score ?? 0) >= Math.ceil(currentQuizData.length * 0.6)) {

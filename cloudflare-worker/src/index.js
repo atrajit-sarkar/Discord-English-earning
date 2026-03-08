@@ -8,6 +8,9 @@ const RESULT_LEVELS = [
   { minPercentage: 0, level: "Beginner", emoji: "\u{1F4DA}", color: 0xf47b67 },
 ];
 
+const SUBMIT_COOLDOWN_MS = 120_000; // 2 minutes between quiz submissions per quiz
+const SHARE_COOLDOWN_MS = 60_000;   // 60 seconds between Discord shares
+
 /* ── Server-side answer keys are now in Firestore ── */
 
 /* ── Helpers ── */
@@ -202,6 +205,7 @@ async function validatePayload(body, env, isShare = false) {
 
 async function verifyTurnstile(token, ipAddress, env) {
   if (!env.TURNSTILE_SECRET_KEY) {
+    console.warn("TURNSTILE_SECRET_KEY not set — skipping anti-spam verification.");
     return { success: true };
   }
 
@@ -398,8 +402,8 @@ async function getUserDocumentFromFirestore(userId, env) {
   return { existing: {}, accessToken, docUrl };
 }
 
-async function saveResultToFirestore(payload, env) {
-  const { existing, accessToken, docUrl } = await getUserDocumentFromFirestore(payload.userId, env);
+async function saveResultToFirestore(payload, env, prefetchedDoc) {
+  const { existing, accessToken, docUrl } = prefetchedDoc ?? await getUserDocumentFromFirestore(payload.userId, env);
 
   if (!accessToken) {
     return { saved: false, reason: "Service account not configured." };
@@ -572,7 +576,8 @@ export default {
         return jsonResponse({ error: validation.error }, 400, origin, env);
       }
 
-      if (env.TURNSTILE_SECRET_KEY && !validation.payload.turnstileToken) {
+      // Require Turnstile token for share action (submit uses cooldown rate limiting)
+      if (action === "share" && env.TURNSTILE_SECRET_KEY && !validation.payload.turnstileToken) {
         return jsonResponse(
           { error: "Missing anti-spam token." },
           400,
@@ -581,24 +586,43 @@ export default {
         );
       }
 
-      const turnstileResult = await verifyTurnstile(
-        validation.payload.turnstileToken,
-        request.headers.get("CF-Connecting-IP") ?? "",
-        env
-      );
-
-      if (!turnstileResult.success) {
-        return jsonResponse(
-          { error: "Anti-spam verification failed." },
-          403,
-          origin,
+      // Verify Turnstile token if one was provided
+      if (validation.payload.turnstileToken) {
+        const turnstileResult = await verifyTurnstile(
+          validation.payload.turnstileToken,
+          request.headers.get("CF-Connecting-IP") ?? "",
           env
         );
+
+        if (!turnstileResult.success) {
+          return jsonResponse(
+            { error: "Anti-spam verification failed." },
+            403,
+            origin,
+            env
+          );
+        }
       }
 
       if (action === "submit") {
+        // Check quiz submission cooldown
+        const userDoc = await getUserDocumentFromFirestore(validation.payload.userId, env);
+        if (userDoc?.existing?.quizHistory?.arrayValue?.values) {
+          const history = userDoc.existing.quizHistory.arrayValue.values;
+          const lastAttemptTime = history
+            .map(h => h.mapValue?.fields)
+            .filter(f => f?.quizId?.stringValue === validation.payload.quizId)
+            .reduce((latest, f) => {
+              const t = new Date(f.completedAt?.stringValue || 0).getTime();
+              return t > latest ? t : latest;
+            }, 0);
+          if (lastAttemptTime && Date.now() - lastAttemptTime < SUBMIT_COOLDOWN_MS) {
+            return jsonResponse({ error: "Please wait before retaking this quiz." }, 429, origin, env);
+          }
+        }
+
         // Save verified result to Firestore using admin credentials
-        const saveResult = await saveResultToFirestore(validation.payload, env);
+        const saveResult = await saveResultToFirestore(validation.payload, env, userDoc);
         if (!saveResult.saved) {
           return jsonResponse(
             { error: saveResult.reason },
@@ -608,6 +632,16 @@ export default {
           );
         }
 
+        // Build per-question results (don't expose raw answer key array)
+        const correctAnswers = validation.payload.answers;
+        const explanations = validation.payload.explanations;
+        const submittedAnswers = validation.payload.userAnswers;
+        const results = correctAnswers.map((correctIdx, i) => ({
+          correct: submittedAnswers[i] === correctIdx,
+          correctIndex: correctIdx,
+          explanation: explanations[i] ?? "",
+        }));
+
         return jsonResponse({
           ok: true,
           score: validation.payload.score,
@@ -615,8 +649,7 @@ export default {
           bestStreak: validation.payload.bestStreak,
           percentage: validation.payload.percentage,
           level: validation.payload.level,
-          answers: validation.payload.answers,
-          explanations: validation.payload.explanations
+          results,
         }, 200, origin, env);
       }
 
@@ -627,6 +660,19 @@ export default {
         const userDoc = await getUserDocumentFromFirestore(validation.payload.userId, env);
         if (!userDoc || !userDoc.existing || !userDoc.existing.quizHistory) {
           return jsonResponse({ error: "No quiz history found to share." }, 404, origin, env);
+        }
+
+        // Check share cooldown to prevent webhook spam
+        const lastShareTime = new Date(
+          userDoc.existing.lastShareTimestamp?.timestampValue || 0
+        ).getTime();
+        if (lastShareTime && Date.now() - lastShareTime < SHARE_COOLDOWN_MS) {
+          return jsonResponse(
+            { error: "Please wait before sharing again." },
+            429,
+            origin,
+            env
+          );
         }
 
         const history = userDoc.existing.quizHistory.arrayValue?.values || [];
@@ -671,6 +717,29 @@ export default {
             origin,
             env
           );
+        }
+
+        // Record share timestamp to enforce cooldown
+        try {
+          await fetch(
+            `${userDoc.docUrl}?updateMask.fieldPaths=lastShareTimestamp`,
+            {
+              method: "PATCH",
+              headers: {
+                Authorization: `Bearer ${userDoc.accessToken}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                fields: {
+                  lastShareTimestamp: {
+                    timestampValue: new Date().toISOString(),
+                  },
+                },
+              }),
+            }
+          );
+        } catch {
+          // Non-critical: share succeeded, cooldown tracking failed
         }
 
         return jsonResponse({ ok: true }, 200, origin, env);
