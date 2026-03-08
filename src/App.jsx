@@ -1006,7 +1006,9 @@ export default function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`Relay responded with ${response.status}`);
+        const errBody = await response.text();
+        console.error("Relay error body:", errBody);
+        throw new Error(`Relay responded with ${response.status}: ${errBody}`);
       }
 
       setWebhookStatus("success");

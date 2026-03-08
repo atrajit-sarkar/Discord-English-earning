@@ -227,10 +227,22 @@ function base64url(source) {
 
 async function getFirebaseAccessToken(env) {
   if (!env.FIREBASE_SERVICE_ACCOUNT) {
+    console.error("FIREBASE_SERVICE_ACCOUNT secret is not set.");
     return null;
   }
 
-  const sa = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT);
+  let sa;
+  try {
+    sa = JSON.parse(env.FIREBASE_SERVICE_ACCOUNT);
+  } catch (e) {
+    console.error("Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:", e.message);
+    return null;
+  }
+
+  if (!sa.private_key || !sa.client_email) {
+    console.error("Service account JSON missing private_key or client_email. Keys found:", Object.keys(sa).join(", "));
+    return null;
+  }
   const now = Math.floor(Date.now() / 1000);
 
   const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
@@ -249,15 +261,28 @@ async function getFirebaseAccessToken(env) {
     .replace(/-----BEGIN PRIVATE KEY-----/, "")
     .replace(/-----END PRIVATE KEY-----/, "")
     .replace(/\s/g, "");
-  const binaryDer = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0));
 
-  const cryptoKey = await crypto.subtle.importKey(
-    "pkcs8",
-    binaryDer,
-    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
+  let binaryDer;
+  try {
+    binaryDer = Uint8Array.from(atob(pemBody), (c) => c.charCodeAt(0));
+  } catch (e) {
+    console.error("Failed to decode private key base64:", e.message, "pemBody length:", pemBody.length);
+    return null;
+  }
+
+  let cryptoKey;
+  try {
+    cryptoKey = await crypto.subtle.importKey(
+      "pkcs8",
+      binaryDer,
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+  } catch (e) {
+    console.error("Failed to import private key:", e.message);
+    return null;
+  }
 
   const unsigned = `${header}.${claim}`;
   const signature = await crypto.subtle.sign(
@@ -275,6 +300,8 @@ async function getFirebaseAccessToken(env) {
   });
 
   if (!tokenRes.ok) {
+    const errText = await tokenRes.text();
+    console.error("Google token exchange failed:", tokenRes.status, errText.slice(0, 500));
     return null;
   }
 
@@ -391,6 +418,8 @@ async function saveResultToFirestore(payload, env) {
     });
 
     if (!patchRes.ok) {
+      const errText = await patchRes.text();
+      console.error("Firestore PATCH failed:", patchRes.status, errText.slice(0, 500));
       return { saved: false, reason: "Failed to save to database." };
     }
   } catch {
@@ -460,6 +489,7 @@ export default {
       });
     }
 
+    try {
     if (request.method !== "POST") {
       return jsonResponse({ error: "Method not allowed." }, 405, origin, env);
     }
@@ -547,5 +577,15 @@ export default {
     }
 
     return jsonResponse({ ok: true }, 200, origin, env);
+
+    } catch (err) {
+      console.error("Unhandled worker error:", err);
+      return jsonResponse(
+        { error: "Internal server error." },
+        500,
+        origin,
+        env
+      );
+    }
   },
 };
