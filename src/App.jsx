@@ -1336,13 +1336,37 @@ export default function App() {
     setQuizState("past-review");
   }
 
-  function handleViewQuiz(attempt) {
+  async function handleViewQuiz(attempt) {
     setCurrentQuizId(attempt.quizId);
     setScore(attempt.score);
     setBestStreak(attempt.bestStreak);
     setUserAnswers(attempt.userAnswers || []);
     setPastReviewAttempt(attempt);
+    setFetchedCorrectAnswers([]);
+    setFetchedExplanations([]);
     setQuizState("past-review");
+
+    // Fetch correct answers and explanations from the server
+    if (relayConfigured) {
+      try {
+        const oauthData = readStoredOauthResponse();
+        const discordToken = oauthData?.accessToken;
+        if (discordToken) {
+          const res = await fetch(DISCORD_RELAY_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "get-answers", discordToken, quizId: attempt.quizId }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.answers) setFetchedCorrectAnswers(data.answers);
+            if (data.explanations) setFetchedExplanations(data.explanations);
+          }
+        }
+      } catch (err) {
+        console.error("[get-answers] Error:", err);
+      }
+    }
   }
 
   function handleQuizCardKeyDown(event, quizId) {
@@ -1832,28 +1856,47 @@ export default function App() {
           <div className="review-list">
             {pastQuizData.map((q, i) => {
               const userAns = pastReviewAttempt.userAnswers?.[i];
+              const correctAns = fetchedCorrectAnswers[i];
+              const hasAnswers = fetchedCorrectAnswers.length > 0;
+              const isCorrect = hasAnswers && userAns === correctAns;
+              const isWrong = hasAnswers && userAns !== correctAns;
               return (
-                <div key={i} className="review-item">
+                <div key={i} className={`review-item ${isCorrect ? "review-item--correct" : isWrong ? "review-item--wrong" : ""}`}>
                   <div className="review-item__header">
                     <span className="review-item__number">Q{i + 1}</span>
+                    {hasAnswers && (
+                      <span className={`review-item__badge ${isCorrect ? "review-item__badge--correct" : "review-item__badge--wrong"}`}>
+                        {isCorrect ? "Correct" : "Incorrect"}
+                      </span>
+                    )}
                   </div>
                   <p className="review-item__question">{q.question}</p>
                   <div className="review-item__answers">
                     {q.options.map((opt, j) => {
                       let cls = "review-option";
-                      if (j === userAns) cls += " review-option--selected";
+                      if (hasAnswers && j === correctAns) cls += " review-option--correct";
+                      if (hasAnswers && j === userAns && j !== correctAns) cls += " review-option--wrong";
+                      if (!hasAnswers && j === userAns) cls += " review-option--selected";
                       return (
                         <div key={j} className={cls}>
                           <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
                           <span>{opt}</span>
-                          {j === userAns && <span className="review-option__tag">{"\u{1F449}"} Your answer</span>}
+                          {hasAnswers && j === correctAns && <CheckIcon className="icon review-option__icon" />}
+                          {hasAnswers && j === userAns && j !== correctAns && <ErrorIcon className="icon review-option__icon" />}
+                          {!hasAnswers && j === userAns && <span className="review-option__tag">{"\u{1F449}"} Your answer</span>}
                         </div>
                       );
                     })}
                   </div>
-                  <div className="review-item__explanation" style={{ opacity: 0.7 }}>
-                    <em>Explanations and correct answers are only visible immediately after taking the quiz to prevent answer sharing.</em>
-                  </div>
+                  {hasAnswers ? (
+                    <div className="review-item__explanation">
+                      <strong>{"\u{1F4A1}"} Explanation:</strong> {fetchedExplanations[i] ?? "Loading..."}
+                    </div>
+                  ) : (
+                    <div className="review-item__explanation" style={{ opacity: 0.7 }}>
+                      <em>Loading answers...</em>
+                    </div>
+                  )}
                 </div>
               );
             })}

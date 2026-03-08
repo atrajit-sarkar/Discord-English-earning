@@ -905,6 +905,54 @@ export default {
         return jsonResponse({ ok: true, member: true, channelAccess: hasChannelAccess, _debug: { userId: discordUserId, roles: memberRoles, perms: permissions.toString(), hasView: hasChannelAccess, roleAllow: roleAllow.toString(), roleDeny: roleDeny.toString() } }, 200, origin, env);
       }
 
+      /* ── get-answers: return correct answers & explanations for a quiz the user already attempted ── */
+      if (action === "get-answers") {
+        const discordToken = typeof body.discordToken === "string" ? body.discordToken.trim() : "";
+        const quizId = typeof body.quizId === "string" ? body.quizId.trim() : "";
+        if (!discordToken) {
+          return jsonResponse({ error: "Missing Discord token." }, 401, origin, env);
+        }
+        if (!quizId) {
+          return jsonResponse({ error: "Missing quizId." }, 400, origin, env);
+        }
+
+        // Verify user identity
+        let discordUserId;
+        try {
+          const meRes = await fetch("https://discord.com/api/v10/users/@me", {
+            headers: { Authorization: `Bearer ${discordToken}` },
+          });
+          if (!meRes.ok) {
+            return jsonResponse({ error: "Discord token invalid." }, 401, origin, env);
+          }
+          const me = await meRes.json();
+          discordUserId = me.id;
+        } catch {
+          return jsonResponse({ error: "Failed to verify Discord identity." }, 401, origin, env);
+        }
+
+        // Check that the user has already attempted this quiz
+        const userDoc = await getUserDocumentFromFirestore(discordUserId, env);
+        const history = userDoc?.existing?.quizHistory?.arrayValue?.values ?? [];
+        const hasAttempted = history.some(
+          (entry) => entry?.mapValue?.fields?.quizId?.stringValue === quizId
+        );
+        if (!hasAttempted) {
+          return jsonResponse({ error: "You must attempt the quiz before viewing answers." }, 403, origin, env);
+        }
+
+        // Fetch quiz answers from Firestore
+        const quizData = await getQuizDataFromFirestore(quizId, env);
+        if (!quizData) {
+          return jsonResponse({ error: "Quiz not found." }, 404, origin, env);
+        }
+
+        const answers = quizData.answers.map(a => Number(a.integerValue ?? a.doubleValue ?? 0));
+        const explanations = quizData.explanations.map(e => e.stringValue ?? "");
+
+        return jsonResponse({ ok: true, answers, explanations }, 200, origin, env);
+      }
+
       /* ── request-access: submit access request form ── */
       if (action === "request-access") {
         if (!env.DISCORD_BOT_TOKEN) {
