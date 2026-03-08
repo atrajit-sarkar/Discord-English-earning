@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { getUserProgress, upsertUserProfile, ensureUserDefaults, saveQuizResult, markQuizSeen } from "./firebase";
+import { getUserProgress } from "./firebase";
 import modernSpokenQuizImage from "../modern-spoken-quiz.png";
 import businessQuizImage from "../business-quiz.png";
 import nauticalQuizImage from "../public/nautical-origin-idioms-expressions.png";
@@ -596,13 +596,6 @@ export default function App() {
     }
 
     try {
-      const syncTasks = [ensureUserDefaults(u.id)];
-      if (syncProfile) {
-        syncTasks.unshift(upsertUserProfile(u));
-      }
-
-      await Promise.allSettled(syncTasks);
-
       const progress = await getUserProgress(u.id);
       const nextStats =
         progress === null && cachedProgress
@@ -976,20 +969,7 @@ export default function App() {
       setShowConfetti(true);
     }
 
-    // Save to Firestore
-    if (user) {
-      const result = getResultSummary(finalScore, currentQuizData.length);
-      await saveQuizResult(user.id, {
-        quizId: currentQuizId,
-        score: finalScore,
-        total: currentQuizData.length,
-        percentage: result.percentage,
-        level: result.level,
-        bestStreak: maxStreak,
-        userAnswers: allAnswers,
-      });
-      await loadUserStats(user, { syncProfile: false });
-    }
+
   }
 
   async function sendResultsToDiscord() {
@@ -1030,6 +1010,8 @@ export default function App() {
       }
 
       setWebhookStatus("success");
+      // Reload stats from Firestore (worker saved the result)
+      await loadUserStats(user, { syncProfile: false });
     } catch (error) {
       console.error(error);
       setWebhookStatus("error");
@@ -1096,9 +1078,7 @@ export default function App() {
         return nextStats;
       });
 
-      void markQuizSeen(user.id, quizId).then(() =>
-        loadUserStats(user, { syncProfile: false })
-      );
+      void loadUserStats(user, { syncProfile: false });
     }
   }
 
