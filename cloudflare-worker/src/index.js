@@ -165,6 +165,8 @@ async function validatePayload(body, env, isShare = false) {
     userAnswers: body.userAnswers,
     turnstileToken:
       typeof body.turnstileToken === "string" ? body.turnstileToken.trim() : "",
+    discordToken:
+      typeof body.discordToken === "string" ? body.discordToken.trim() : "",
   };
 
   if (!isShare) {
@@ -230,6 +232,29 @@ async function verifyTurnstile(token, ipAddress, env) {
 
   const data = await response.json();
   return { success: Boolean(data.success) };
+}
+
+/* ── Discord token verification ── */
+
+async function verifyDiscordUser(token, expectedUserId) {
+  if (!token) return false;
+
+  try {
+    const response = await fetch("https://discord.com/api/users/@me", {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    if (!response.ok) {
+      return false;
+    }
+
+    const data = await response.json();
+    return data.id === expectedUserId;
+  } catch {
+    return false;
+  }
 }
 
 /* ── Firebase service-account auth ── */
@@ -576,10 +601,10 @@ export default {
         return jsonResponse({ error: validation.error }, 400, origin, env);
       }
 
-      // Require Turnstile token for share action (submit uses cooldown rate limiting)
-      if (action === "share" && env.TURNSTILE_SECRET_KEY && !validation.payload.turnstileToken) {
+      // Require Turnstile token globally to prevent backend spam and spoofing
+      if (env.TURNSTILE_SECRET_KEY && !validation.payload.turnstileToken) {
         return jsonResponse(
-          { error: "Missing anti-spam token." },
+          { error: "Missing anti-spam token. Please complete the captcha." },
           400,
           origin,
           env
@@ -602,6 +627,30 @@ export default {
             env
           );
         }
+      }
+
+      // Verify Discord OAuth Token matches the expected userId
+      if (!validation.payload.discordToken) {
+        return jsonResponse(
+          { error: "Missing Discord token." },
+          401,
+          origin,
+          env
+        );
+      }
+
+      const isValidDiscordUser = await verifyDiscordUser(
+        validation.payload.discordToken,
+        validation.payload.userId
+      );
+
+      if (!isValidDiscordUser) {
+        return jsonResponse(
+          { error: "Unauthorized. Discord token validation failed." },
+          401,
+          origin,
+          env
+        );
       }
 
       if (action === "submit") {

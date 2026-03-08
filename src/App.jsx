@@ -933,6 +933,8 @@ export default function App() {
 
     try {
       const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === currentQuizId);
+      const oauthData = readStoredOauthResponse();
+      const discordToken = oauthData?.access_token ?? "";
 
       const response = await fetch(DISCORD_RELAY_URL, {
         method: "POST",
@@ -947,6 +949,7 @@ export default function App() {
           siteBaseUrl: SITE_BASE_URL,
           userAnswers: allAnswers,
           turnstileToken,
+          discordToken,
         }),
       });
 
@@ -983,186 +986,835 @@ export default function App() {
   }
 
   async function sendResultsToDiscord() {
-    if (!user || !relayConfigured) {
-      setWebhookStatus("error");
-      return;
+  if (!user || !relayConfigured) {
+    setWebhookStatus("error");
+    return;
+  }
+
+  if (turnstileConfigured && !turnstileToken) {
+    setTurnstileError("Complete the anti-spam check before sharing.");
+    setWebhookStatus("error");
+    return;
+  }
+
+  setWebhookStatus("sending");
+  setTurnstileError("");
+  const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === currentQuizId);
+  const quizTitle = quizMeta?.title ?? "Quiz";
+  const oauthData = readStoredOauthResponse();
+  const discordToken = oauthData?.access_token ?? "";
+
+  try {
+    const response = await fetch(DISCORD_RELAY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "share",
+        userId: user.id,
+        username: user.username,
+        avatar: user.avatar,
+        quizId: currentQuizId,
+        quizTitle,
+        siteBaseUrl: SITE_BASE_URL,
+        userAnswers,
+        turnstileToken,
+        discordToken,
+        score,
+        total: currentQuizData.length,
+        bestStreak,
+      }),
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      console.error("Relay error body:", errBody);
+      throw new Error(`Relay responded with ${response.status}: ${errBody}`);
     }
 
-    if (turnstileConfigured && !turnstileToken) {
-      setTurnstileError("Complete the anti-spam check before sharing.");
-      setWebhookStatus("error");
-      return;
+    setWebhookStatus("success");
+    // Reload stats from Firestore (worker saved the result)
+    await loadUserStats(user, { syncProfile: false });
+  } catch (error) {
+    console.error(error);
+    setWebhookStatus("error");
+  } finally {
+    if (turnstileConfigured) {
+      resetTurnstileChallenge();
     }
+  }
+}
 
-    setWebhookStatus("sending");
-    setTurnstileError("");
-    const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === currentQuizId);
-    const quizTitle = quizMeta?.title ?? "Quiz";
+function resetQuiz() {
+  setCurrentQuestion(0);
+  setScore(0);
+  setStreak(0);
+  setBestStreak(0);
+  setQuizState("dashboard");
+  setWebhookStatus("idle");
+  setSelectedAnswer(null);
+  setAnswerRevealed(false);
+  setQuestionKey(0);
+  setShowConfetti(false);
+  setCurrentQuizId(null);
+  setUserAnswers([]);
+  setFetchedCorrectAnswers([]);
+  setFetchedExplanations([]);
+}
 
-    try {
-      const response = await fetch(DISCORD_RELAY_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "share",
-          userId: user.id,
-          username: user.username,
-          avatar: user.avatar,
-          quizId: currentQuizId,
-          quizTitle,
-          siteBaseUrl: SITE_BASE_URL,
-          userAnswers,
-          turnstileToken,
-          score,
-          total: currentQuizData.length,
-          bestStreak,
-        }),
+function handleBackToDashboard() {
+  setCurrentQuestion(0);
+  setScore(0);
+  setStreak(0);
+  setBestStreak(0);
+  setQuizState("dashboard");
+  setSelectedAnswer(null);
+  setAnswerRevealed(false);
+  setQuestionKey(0);
+  setCurrentQuizId(null);
+  setUserAnswers([]);
+  setFetchedCorrectAnswers([]);
+  setFetchedExplanations([]);
+}
+
+function handleStartQuiz(quizId) {
+  setCurrentQuizId(quizId);
+  setCurrentQuestion(0);
+  setScore(0);
+  setStreak(0);
+  setBestStreak(0);
+  setSelectedAnswer(null);
+  setAnswerRevealed(false);
+  setQuestionKey(0);
+  setShowConfetti(false);
+  setWebhookStatus("idle");
+  setUserAnswers([]);
+  setFetchedCorrectAnswers([]);
+  setFetchedExplanations([]);
+  setQuizState("quiz");
+
+  // Mark quiz as seen so the NEW badge disappears (persisted in Firestore)
+  if (user) {
+    setUserStats((prev) => {
+      if (!prev) return prev;
+
+      const nextStats = normalizeUserStats({
+        ...prev,
+        seenQuizzes: [...(prev.seenQuizzes ?? []), quizId],
       });
 
-      if (!response.ok) {
-        const errBody = await response.text();
-        console.error("Relay error body:", errBody);
-        throw new Error(`Relay responded with ${response.status}: ${errBody}`);
-      }
+      writeStoredUserStats(user.id, nextStats);
+      return nextStats;
+    });
 
-      setWebhookStatus("success");
-      // Reload stats from Firestore (worker saved the result)
-      await loadUserStats(user, { syncProfile: false });
-    } catch (error) {
-      console.error(error);
-      setWebhookStatus("error");
-    } finally {
-      if (turnstileConfigured) {
-        resetTurnstileChallenge();
-      }
-    }
+    void loadUserStats(user, { syncProfile: false });
+  }
+}
+
+function scrollToQuizCard(quizId) {
+  const el = quizCardRefs.current[quizId];
+  if (el) {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("quiz-card--glow");
+    setTimeout(() => el.classList.remove("quiz-card--glow"), 1800);
+  }
+}
+
+function handleViewPastAttempt(attempt) {
+  setPastReviewAttempt(attempt);
+  setQuizState("past-review");
+}
+
+function handleQuizCardKeyDown(event, quizId) {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
   }
 
-  function resetQuiz() {
-    setCurrentQuestion(0);
-    setScore(0);
-    setStreak(0);
-    setBestStreak(0);
-    setQuizState("dashboard");
-    setWebhookStatus("idle");
-    setSelectedAnswer(null);
-    setAnswerRevealed(false);
-    setQuestionKey(0);
-    setShowConfetti(false);
-    setCurrentQuizId(null);
-    setUserAnswers([]);
-    setFetchedCorrectAnswers([]);
-    setFetchedExplanations([]);
-  }
+  event.preventDefault();
+  handleStartQuiz(quizId);
+}
 
-  function handleBackToDashboard() {
-    setCurrentQuestion(0);
-    setScore(0);
-    setStreak(0);
-    setBestStreak(0);
-    setQuizState("dashboard");
-    setSelectedAnswer(null);
-    setAnswerRevealed(false);
-    setQuestionKey(0);
-    setCurrentQuizId(null);
-    setUserAnswers([]);
-    setFetchedCorrectAnswers([]);
-    setFetchedExplanations([]);
-  }
+/* ─── Loading State ─── */
+if (loadingAuth) {
+  return (
+    <main className="page-shell">
+      <FloatingParticles />
+      <section className="card card--compact status-card">
+        <SpinnerIcon className="icon icon--spin icon--large" />
+        <p>Logging you in...</p>
+      </section>
+    </main>
+  );
+}
 
-  function handleStartQuiz(quizId) {
-    setCurrentQuizId(quizId);
-    setCurrentQuestion(0);
-    setScore(0);
-    setStreak(0);
-    setBestStreak(0);
-    setSelectedAnswer(null);
-    setAnswerRevealed(false);
-    setQuestionKey(0);
-    setShowConfetti(false);
-    setWebhookStatus("idle");
-    setUserAnswers([]);
-    setFetchedCorrectAnswers([]);
-    setFetchedExplanations([]);
-    setQuizState("quiz");
+/* ─── Login Page (no user) ─── */
+if (!user) {
+  return (
+    <main className="login-page">
+      <FloatingParticles />
+      <div className="login-card">
+        <div className="login-card__logo">
+          <DiscordLogo />
+        </div>
+        <h1 className="login-card__title">English Quiz</h1>
+        <p className="login-card__subtitle">
+          Test your everyday English skills and track your progress with the community.
+        </p>
 
-    // Mark quiz as seen so the NEW badge disappears (persisted in Firestore)
-    if (user) {
-      setUserStats((prev) => {
-        if (!prev) return prev;
-
-        const nextStats = normalizeUserStats({
-          ...prev,
-          seenQuizzes: [...(prev.seenQuizzes ?? []), quizId],
-        });
-
-        writeStoredUserStats(user.id, nextStats);
-        return nextStats;
-      });
-
-      void loadUserStats(user, { syncProfile: false });
-    }
-  }
-
-  function scrollToQuizCard(quizId) {
-    const el = quizCardRefs.current[quizId];
-    if (el) {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      el.classList.add("quiz-card--glow");
-      setTimeout(() => el.classList.remove("quiz-card--glow"), 1800);
-    }
-  }
-
-  function handleViewPastAttempt(attempt) {
-    setPastReviewAttempt(attempt);
-    setQuizState("past-review");
-  }
-
-  function handleQuizCardKeyDown(event, quizId) {
-    if (event.key !== "Enter" && event.key !== " ") {
-      return;
-    }
-
-    event.preventDefault();
-    handleStartQuiz(quizId);
-  }
-
-  /* ─── Loading State ─── */
-  if (loadingAuth) {
-    return (
-      <main className="page-shell">
-        <FloatingParticles />
-        <section className="card card--compact status-card">
-          <SpinnerIcon className="icon icon--spin icon--large" />
-          <p>Logging you in...</p>
-        </section>
-      </main>
-    );
-  }
-
-  /* ─── Login Page (no user) ─── */
-  if (!user) {
-    return (
-      <main className="login-page">
-        <FloatingParticles />
-        <div className="login-card">
-          <div className="login-card__logo">
-            <DiscordLogo />
+        {authError && (
+          <div className="notice notice--error" style={{ width: "100%" }}>
+            <ErrorIcon className="icon" />
+            <span>{authError}</span>
           </div>
-          <h1 className="login-card__title">English Quiz</h1>
-          <p className="login-card__subtitle">
-            Test your everyday English skills and track your progress with the community.
+        )}
+
+        <div className="login-card__divider" />
+
+        <button
+          type="button"
+          className="button button--discord"
+          onClick={handleDiscordLogin}
+        >
+          <DiscordLogo />
+          Login with Discord
+        </button>
+
+        <div className="login-card__features">
+          <div className="login-card__feature">
+            <span className="login-card__feature-icon">{"\u{1F3AF}"}</span>
+            5 real-world English questions
+          </div>
+          <div className="login-card__feature">
+            <span className="login-card__feature-icon">{"\u{1F4CA}"}</span>
+            Track your score &amp; streaks
+          </div>
+          <div className="login-card__feature">
+            <span className="login-card__feature-icon">{"\u{2601}\uFE0F"}</span>
+            Progress saved to cloud
+          </div>
+          <div className="login-card__feature">
+            <span className="login-card__feature-icon">{"\u{1F4E2}"}</span>
+            Share results to Discord
+          </div>
+        </div>
+      </div>
+    </main>
+  );
+}
+
+/* ─── Quiz State ─── */
+if (quizState === "quiz" && currentQuizData) {
+  const question = currentQuizData[currentQuestion];
+  const progress = ((currentQuestion + (selectedAnswer !== null ? 1 : 0)) / currentQuizData.length) * 100;
+  const isLastQuestion = currentQuestion + 1 === currentQuizData.length;
+
+  return (
+    <main className="page-shell">
+      <FloatingParticles />
+      <section className="card quiz-card">
+        <div className="quiz-topbar">
+          <button
+            type="button"
+            className="button button--ghost quiz-back-btn"
+            onClick={handleBackToDashboard}
+          >
+            <ArrowLeftIcon className="icon" />
+            Dashboard
+          </button>
+          <div className="quiz-topbar__info">
+            {user && (
+              <span className="quiz-topbar__user">
+                <img src={user.avatar} alt="" className="quiz-topbar__avatar" />
+                {user.username}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="quiz-progress">
+          <div
+            className="quiz-progress__bar"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+
+        <div className="quiz-header">
+          <p className="eyebrow">
+            Question {currentQuestion + 1} / {currentQuizData.length}
           </p>
+          <span className="quiz-footer__quiz-name">
+            {AVAILABLE_QUIZZES.find(q => q.id === currentQuizId)?.title ?? "Quiz"}
+          </span>
+        </div>
 
-          {authError && (
-            <div className="notice notice--error" style={{ width: "100%" }}>
-              <ErrorIcon className="icon" />
-              <span>{authError}</span>
-            </div>
+        <div className="question-enter" key={questionKey}>
+          <h1 className="quiz-title">{question.question}</h1>
+
+          <div className="quiz-options">
+            {question.options.map((option, index) => {
+              let optionClass = "quiz-option";
+              if (selectedAnswer === index) {
+                optionClass += " quiz-option--selected";
+              }
+
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  className={optionClass}
+                  onClick={() => handleAnswerClick(index)}
+                >
+                  <span className="quiz-option__label">
+                    {OPTION_LETTERS[index]}
+                  </span>
+                  {option}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="quiz-footer">
+          <span className="quiz-footer__progress-text">
+            {currentQuestion + 1} of {currentQuizData.length}
+          </span>
+          {isLastQuestion ? (
+            <button
+              type="button"
+              className="button button--success quiz-next-btn"
+              onClick={handleFinishQuiz}
+              disabled={selectedAnswer === null || isSubmitting}
+            >
+              {isSubmitting ? "Evaluating..." : "Finish Quiz"}
+              {!isSubmitting && <CheckIcon className="icon" />}
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="button button--primary quiz-next-btn"
+              onClick={handleNextQuestion}
+              disabled={selectedAnswer === null}
+            >
+              Next
+              <ArrowRightIcon className="icon" />
+            </button>
           )}
+        </div>
+      </section>
+    </main>
+  );
+}
 
-          <div className="login-card__divider" />
+/* ─── Evaluating State ─── */
+if (quizState === "evaluating") {
+  return (
+    <main className="page-shell">
+      <FloatingParticles />
+      <section className="card card--compact status-card">
+        <SpinnerIcon className="icon icon--spin icon--large" />
+        <p>Evaluating your answers securely...</p>
+      </section>
+    </main>
+  );
+}
 
+/* ─── Review State (dedicated page) ─── */
+if (quizState === "review" && currentQuizData) {
+  return (
+    <main className="page-shell">
+      <FloatingParticles />
+      <section className="card review-card">
+        <div className="quiz-topbar">
+          <button
+            type="button"
+            className="button button--ghost quiz-back-btn"
+            onClick={() => setQuizState("results")}
+          >
+            <ArrowLeftIcon className="icon" />
+            Results
+          </button>
+          <span className="quiz-topbar__user" style={{ fontWeight: 700, color: "var(--dc-text-primary)" }}>
+            {AVAILABLE_QUIZZES.find(q => q.id === currentQuizId)?.title ?? "Quiz"} — Review
+          </span>
+        </div>
+
+        <div className="review-summary">
+          <span className="review-summary__score">
+            {score} / {currentQuizData.length} correct
+          </span>
+        </div>
+
+        <div className="review-list">
+          {currentQuizData.map((q, i) => {
+            const userAns = userAnswers[i];
+            const correctAns = fetchedCorrectAnswers[i];
+            const isCorrect = userAns === correctAns;
+            return (
+              <div key={i} className={`review-item ${isCorrect ? "review-item--correct" : "review-item--wrong"}`}>
+                <div className="review-item__header">
+                  <span className="review-item__number">Q{i + 1}</span>
+                  <span className={`review-item__badge ${isCorrect ? "review-item__badge--correct" : "review-item__badge--wrong"}`}>
+                    {isCorrect ? "Correct" : "Incorrect"}
+                  </span>
+                </div>
+                <p className="review-item__question">{q.question}</p>
+                <div className="review-item__answers">
+                  {q.options.map((opt, j) => {
+                    let cls = "review-option";
+                    if (j === correctAns) cls += " review-option--correct";
+                    if (j === userAns && j !== correctAns) cls += " review-option--wrong";
+                    return (
+                      <div key={j} className={cls}>
+                        <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
+                        <span>{opt}</span>
+                        {j === correctAns && <CheckIcon className="icon review-option__icon" />}
+                        {j === userAns && j !== correctAns && <ErrorIcon className="icon review-option__icon" />}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="review-item__explanation">
+                  <strong>{"\u{1F4A1}"} Explanation:</strong> {fetchedExplanations[i] ?? "Loading..."}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="actions" style={{ justifyContent: "center", marginTop: "1.5rem" }}>
+          <button type="button" className="button button--primary" onClick={resetQuiz}>
+            <ArrowLeftIcon className="icon" />
+            Back to Dashboard
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+/* ─── Past Attempt Review State ─── */
+if (quizState === "past-review" && pastReviewAttempt) {
+  const pastQuizData = QUIZZES[pastReviewAttempt.quizId] ?? [];
+  const pastQuizTitle = AVAILABLE_QUIZZES.find(q => q.id === pastReviewAttempt.quizId)?.title ?? "Quiz";
+
+  return (
+    <main className="page-shell">
+      <FloatingParticles />
+      <section className="card review-card">
+        <div className="quiz-topbar">
+          <button
+            type="button"
+            className="button button--ghost quiz-back-btn"
+            onClick={() => { setPastReviewAttempt(null); setQuizState("dashboard"); }}
+          >
+            <ArrowLeftIcon className="icon" />
+            Dashboard
+          </button>
+          <span className="quiz-topbar__user" style={{ fontWeight: 700, color: "var(--dc-text-primary)" }}>
+            {pastQuizTitle} — Past Attempt
+          </span>
+        </div>
+
+        <div className="review-summary">
+          <span className="review-summary__score">
+            {pastReviewAttempt.score} / {pastReviewAttempt.total} correct ({pastReviewAttempt.percentage}%)
+          </span>
+          <span style={{ fontSize: "0.82rem", color: "var(--dc-text-muted)" }}>
+            {pastReviewAttempt.completedAt ? new Date(pastReviewAttempt.completedAt).toLocaleString() : ""}
+          </span>
+        </div>
+
+        <div className="review-list">
+          {pastQuizData.map((q, i) => {
+            const userAns = pastReviewAttempt.userAnswers?.[i];
+            return (
+              <div key={i} className="review-item review-item--wrong">
+                <div className="review-item__header">
+                  <span className="review-item__number">Q{i + 1}</span>
+                </div>
+                <p className="review-item__question">{q.question}</p>
+                <div className="review-item__answers">
+                  {q.options.map((opt, j) => {
+                    let cls = "review-option";
+                    if (j === userAns) cls += " review-option--wrong";
+                    return (
+                      <div key={j} className={cls}>
+                        <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
+                        <span>{opt}</span>
+                        {j === userAns && <span className="icon review-option__icon">{"\u{1F448}"} You chose</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="review-item__explanation" style={{ opacity: 0.7 }}>
+                  <em>Explanations and correct answers are only visible immediately after taking the quiz to prevent answer sharing.</em>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="actions" style={{ justifyContent: "center", marginTop: "1.5rem" }}>
+          <button type="button" className="button button--primary" onClick={() => { setPastReviewAttempt(null); setQuizState("dashboard"); }}>
+            <ArrowLeftIcon className="icon" />
+            Back to Dashboard
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+/* ─── Results State ─── */
+if (quizState === "results") {
+  const result = getResultSummary(score, currentQuizData.length);
+
+  return (
+    <main className="page-shell">
+      <FloatingParticles />
+      {showConfetti && <Confetti />}
+      <section className="card card--compact results-card">
+        <p className="eyebrow">Quiz complete</p>
+        <h1 className="hero-title">Your Results</h1>
+
+        <div className="score-badge">
+          <strong>
+            {score} / {currentQuizData.length}
+          </strong>
+          <span>{result.percentage}%</span>
+        </div>
+
+        <div className={`level-badge ${result.levelClass}`}>
+          {result.emoji} {result.level}
+        </div>
+
+        {bestStreak > 0 && (
+          <p
+            style={{
+              color: "var(--dc-text-muted)",
+              fontSize: "0.85rem",
+              marginTop: "0.5rem",
+            }}
+          >
+            {"\u{1F525}"} Best streak: {bestStreak} in a row
+          </p>
+        )}
+
+        <p className="support-copy" style={{ textAlign: "center" }}>
+          {result.message}
+        </p>
+
+        {!relayConfigured && (
+          <div className="notice notice--warning">
+            <ErrorIcon className="icon" />
+            <span>
+              Add VITE_DISCORD_RELAY_URL in .env to enable sharing.
+            </span>
+          </div>
+        )}
+
+        {relayConfigured && !turnstileConfigured && (
+          <div className="notice notice--warning">
+            <ErrorIcon className="icon" />
+            <span>
+              Add VITE_TURNSTILE_SITE_KEY to enable the Worker&apos;s anti-spam check.
+            </span>
+          </div>
+        )}
+
+        {turnstileConfigured && (
+          <div
+            style={{
+              width: "100%",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: "0.5rem",
+            }}
+          >
+            <div ref={turnstileContainerRef} />
+            {!turnstileToken && (
+              <span
+                style={{
+                  color: "var(--dc-text-muted)",
+                  fontSize: "0.82rem",
+                  textAlign: "center",
+                }}
+              >
+                Complete the anti-spam check to enable sharing.
+              </span>
+            )}
+            {turnstileError && (
+              <div className="notice notice--error" style={{ width: "100%" }}>
+                <ErrorIcon className="icon" />
+                <span>{turnstileError}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="actions" style={{ justifyContent: "center", flexDirection: "column", alignItems: "center", gap: "0.6rem" }}>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", justifyContent: "center" }}>
+            <button
+              type="button"
+              className="button button--discord"
+              onClick={sendResultsToDiscord}
+              disabled={
+                webhookStatus === "sending" ||
+                !relayConfigured ||
+                (turnstileConfigured && !turnstileToken)
+              }
+            >
+              {webhookStatus === "sending" ? (
+                <>
+                  <SpinnerIcon className="icon icon--spin" />
+                  Sending...
+                </>
+              ) : (
+                <>
+                  <DiscordLogo />
+                  Share to Discord
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              className="button button--primary"
+              onClick={() => setQuizState("review")}
+            >
+              {"\u{1F50D}"} Review Answers
+            </button>
+          </div>
+
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={resetQuiz}
+          >
+            <ArrowLeftIcon className="icon" />
+            Back to Dashboard
+          </button>
+        </div>
+
+        {webhookStatus === "success" && (
+          <div className="notice notice--success">
+            <CheckIcon className="icon" />
+            <span>Results sent to your Discord channel!</span>
+          </div>
+        )}
+
+        {webhookStatus === "error" && (
+          <div className="notice notice--error">
+            <ErrorIcon className="icon" />
+            <span>Could not share the result. Check the relay URL or Worker logs.</span>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+/* ─── Dashboard State ─── */
+if (quizState === "dashboard" && user) {
+  return (
+    <main className="dashboard-layout page-shell">
+      <FloatingParticles />
+      <div className="dashboard-container">
+        <header className="dashboard-header">
+          <div className="dashboard-header__content">
+            <div className="dashboard-header__left">
+              <img src={user.avatar} alt="" className="dashboard-avatar" />
+              <div>
+                <p className="eyebrow">{"\u{1F44B}"} Welcome back</p>
+                <h1 className="dashboard-title">{user.username}</h1>
+              </div>
+            </div>
+            <div className="user-panel">
+              <button type="button" className="button button--ghost" onClick={handleLogout} style={{ fontSize: "0.8rem", height: "2.2rem", padding: "0 0.9rem", minHeight: "auto" }}>
+                Logout
+              </button>
+            </div>
+          </div>
+        </header>
+
+        {loadingUserStats && !userStats && (
+          <div className="notice notice--warning" style={{ marginBottom: "1.25rem" }}>
+            <SpinnerIcon className="icon icon--spin" />
+            <span>Syncing your progress from Firestore...</span>
+          </div>
+        )}
+
+        {/* Stats Cards Row */}
+        <section className="stats-row">
+          <div className="stat-card">
+            <div className="stat-card__icon stat-card__icon--blue">{"\u{1F3AF}"}</div>
+            <div className="stat-card__info">
+              <span className="stat-card__value">{userStatsView.totalAttempts}</span>
+              <span className="stat-card__label">Quizzes Taken</span>
+            </div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-card__icon stat-card__icon--green">{"\u{1F451}"}</div>
+            <div className="stat-card__info">
+              <span className="stat-card__value">{userStatsView.bestScore}</span>
+              <span className="stat-card__label">Best Score</span>
+            </div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-card__icon stat-card__icon--orange">{"\u{1F525}"}</div>
+            <div className="stat-card__info">
+              <span className="stat-card__value">{userStatsView.bestStreak}</span>
+              <span className="stat-card__label">Best Streak</span>
+            </div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-card__icon stat-card__icon--purple">{"\u{1F4CA}"}</div>
+            <div className="stat-card__info">
+              <span className="stat-card__value">
+                {recentQuizHistory.length
+                  ? `${Math.round(recentQuizHistory.reduce((s, h) => s + (h.percentage ?? 0), 0) / recentQuizHistory.length)}%`
+                  : "—"}
+              </span>
+              <span className="stat-card__label">Avg Score</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="dashboard-content">
+          <h2 className="dashboard-section-title">Available Quizzes</h2>
+          <div className="quiz-grid">
+            {AVAILABLE_QUIZZES.map((quiz) => {
+              const attemptCount = recentQuizHistory.filter((h) => h.quizId === quiz.id).length;
+              return (
+                <div
+                  key={quiz.id}
+                  ref={(el) => { quizCardRefs.current[quiz.id] = el; }}
+                  className="dashboard-quiz-card"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleStartQuiz(quiz.id)}
+                  onKeyDown={(event) => handleQuizCardKeyDown(event, quiz.id)}
+                >
+                  <div className="quiz-card__image-wrapper">
+                    <img
+                      src={quiz.image}
+                      alt=""
+                      aria-hidden="true"
+                      className="quiz-card__image"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                    <span className="quiz-card__image-tag">{quiz.tagline}</span>
+                    {quiz.isNew && (!loadingUserStats || userStats) && !seenQuizIds.has(quiz.id) && (
+                      <span className="quiz-card__badge">New</span>
+                    )}
+                  </div>
+                  <div className="quiz-card__body">
+                    <div className="quiz-card__copy">
+                      <h3>{quiz.title}</h3>
+                      <p>{quiz.description}</p>
+                    </div>
+                    <div className="quiz-card__meta">
+                      <span className="meta-tag">
+                        <span className="meta-tag__label">Level</span>
+                        <span className="meta-tag__value">{quiz.level}</span>
+                      </span>
+                      <span className="meta-tag">
+                        <span className="meta-tag__label">Duration</span>
+                        <span className="meta-tag__value">{quiz.duration}</span>
+                      </span>
+                      <span className="meta-tag">
+                        <span className="meta-tag__label">Questions</span>
+                        <span className="meta-tag__value">{QUIZZES[quiz.id]?.length ?? 0}</span>
+                      </span>
+                      {attemptCount > 0 && (
+                        <span className="meta-tag meta-tag--accent">
+                          <span className="meta-tag__label">Attempts</span>
+                          <span className="meta-tag__value">{attemptCount}</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="quiz-card__cta">
+                    <span>Start Quiz</span>
+                    <ArrowRightIcon className="icon" />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Recent Activity */}
+        {recentQuizHistory.length > 0 && (
+          <section className="dashboard-content">
+            <h2 className="dashboard-section-title">Recent Activity</h2>
+            <div className="activity-list">
+              {recentQuizHistory.slice(-5).reverse().map((h, i) => {
+                const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === h.quizId);
+                return (
+                  <div key={i} className="activity-item">
+                    {quizMeta && (
+                      <button
+                        type="button"
+                        className="activity-item__quiz-name"
+                        onClick={() => scrollToQuizCard(h.quizId)}
+                        title={`Scroll to ${quizMeta.title}`}
+                      >
+                        {quizMeta.title}
+                      </button>
+                    )}
+                    <div className="activity-item__score">
+                      <strong>{h.score}/{h.total}</strong>
+                      <span>({h.percentage}%)</span>
+                    </div>
+                    <span className={`level-badge level-badge--${h.level?.toLowerCase()}`} style={{ fontSize: "0.7rem", padding: "0.15rem 0.55rem", marginTop: 0 }}>
+                      {h.level}
+                    </span>
+                    <span className="activity-item__date">
+                      {h.completedAt ? new Date(h.completedAt).toLocaleDateString() : "—"}
+                    </span>
+                    {h.userAnswers?.length > 0 && (
+                      <button
+                        type="button"
+                        className="button button--ghost activity-item__review-btn"
+                        onClick={() => handleViewPastAttempt(h)}
+                      >
+                        View Results
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+      </div>
+    </main>
+  );
+}
+
+/* ─── Welcome / Landing State ─── */
+return (
+  <main className="page-shell">
+    <FloatingParticles />
+    <section className="card hero-card">
+      <div className="hero-copy">
+        <p className="eyebrow">{"\u{1F30D}"} Discord community activity</p>
+        <h1 className="hero-title">Modern Spoken English Quiz</h1>
+        <p className="support-copy">
+          Log in with Discord, test your everyday English skills, and share
+          your score with the community. Quick, fun, and competitive!
+        </p>
+
+        {authError && (
+          <div className="notice notice--error">
+            <ErrorIcon className="icon" />
+            <span>{authError}</span>
+          </div>
+        )}
+
+        {!user ? (
           <button
             type="button"
             className="button button--discord"
@@ -1171,762 +1823,116 @@ export default function App() {
             <DiscordLogo />
             Login with Discord
           </button>
+        ) : (
+          <div className="user-panel">
+            <div className="user-chip">
+              <img src={user.avatar} alt="" className="avatar" />
+              <span>{user.username}</span>
+            </div>
 
-          <div className="login-card__features">
-            <div className="login-card__feature">
-              <span className="login-card__feature-icon">{"\u{1F3AF}"}</span>
-              5 real-world English questions
-            </div>
-            <div className="login-card__feature">
-              <span className="login-card__feature-icon">{"\u{1F4CA}"}</span>
-              Track your score &amp; streaks
-            </div>
-            <div className="login-card__feature">
-              <span className="login-card__feature-icon">{"\u{2601}\uFE0F"}</span>
-              Progress saved to cloud
-            </div>
-            <div className="login-card__feature">
-              <span className="login-card__feature-icon">{"\u{1F4E2}"}</span>
-              Share results to Discord
-            </div>
-          </div>
-        </div>
-      </main>
-    );
-  }
-
-  /* ─── Quiz State ─── */
-  if (quizState === "quiz" && currentQuizData) {
-    const question = currentQuizData[currentQuestion];
-    const progress = ((currentQuestion + (selectedAnswer !== null ? 1 : 0)) / currentQuizData.length) * 100;
-    const isLastQuestion = currentQuestion + 1 === currentQuizData.length;
-
-    return (
-      <main className="page-shell">
-        <FloatingParticles />
-        <section className="card quiz-card">
-          <div className="quiz-topbar">
             <button
               type="button"
-              className="button button--ghost quiz-back-btn"
-              onClick={handleBackToDashboard}
+              className="button button--primary"
+              onClick={() => setQuizState("dashboard")}
             >
-              <ArrowLeftIcon className="icon" />
-              Dashboard
+              Go to Dashboard
+              <ArrowRightIcon className="icon" />
             </button>
-            <div className="quiz-topbar__info">
-              {user && (
-                <span className="quiz-topbar__user">
-                  <img src={user.avatar} alt="" className="quiz-topbar__avatar" />
-                  {user.username}
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div className="quiz-progress">
-            <div
-              className="quiz-progress__bar"
-              style={{ width: `${progress}%` }}
-            />
-          </div>
-
-          <div className="quiz-header">
-            <p className="eyebrow">
-              Question {currentQuestion + 1} / {currentQuizData.length}
-            </p>
-            <span className="quiz-footer__quiz-name">
-              {AVAILABLE_QUIZZES.find(q => q.id === currentQuizId)?.title ?? "Quiz"}
-            </span>
-          </div>
-
-          <div className="question-enter" key={questionKey}>
-            <h1 className="quiz-title">{question.question}</h1>
-
-            <div className="quiz-options">
-              {question.options.map((option, index) => {
-                let optionClass = "quiz-option";
-                if (selectedAnswer === index) {
-                  optionClass += " quiz-option--selected";
-                }
-
-                return (
-                  <button
-                    key={option}
-                    type="button"
-                    className={optionClass}
-                    onClick={() => handleAnswerClick(index)}
-                  >
-                    <span className="quiz-option__label">
-                      {OPTION_LETTERS[index]}
-                    </span>
-                    {option}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="quiz-footer">
-            <span className="quiz-footer__progress-text">
-              {currentQuestion + 1} of {currentQuizData.length}
-            </span>
-            {isLastQuestion ? (
-              <button
-                type="button"
-                className="button button--success quiz-next-btn"
-                onClick={handleFinishQuiz}
-                disabled={selectedAnswer === null || isSubmitting}
-              >
-                {isSubmitting ? "Evaluating..." : "Finish Quiz"}
-                {!isSubmitting && <CheckIcon className="icon" />}
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="button button--primary quiz-next-btn"
-                onClick={handleNextQuestion}
-                disabled={selectedAnswer === null}
-              >
-                Next
-                <ArrowRightIcon className="icon" />
-              </button>
-            )}
-          </div>
-        </section>
-      </main>
-    );
-  }
-
-  /* ─── Evaluating State ─── */
-  if (quizState === "evaluating") {
-    return (
-      <main className="page-shell">
-        <FloatingParticles />
-        <section className="card card--compact status-card">
-          <SpinnerIcon className="icon icon--spin icon--large" />
-          <p>Evaluating your answers securely...</p>
-        </section>
-      </main>
-    );
-  }
-
-  /* ─── Review State (dedicated page) ─── */
-  if (quizState === "review" && currentQuizData) {
-    return (
-      <main className="page-shell">
-        <FloatingParticles />
-        <section className="card review-card">
-          <div className="quiz-topbar">
-            <button
-              type="button"
-              className="button button--ghost quiz-back-btn"
-              onClick={() => setQuizState("results")}
-            >
-              <ArrowLeftIcon className="icon" />
-              Results
-            </button>
-            <span className="quiz-topbar__user" style={{ fontWeight: 700, color: "var(--dc-text-primary)" }}>
-              {AVAILABLE_QUIZZES.find(q => q.id === currentQuizId)?.title ?? "Quiz"} — Review
-            </span>
-          </div>
-
-          <div className="review-summary">
-            <span className="review-summary__score">
-              {score} / {currentQuizData.length} correct
-            </span>
-          </div>
-
-          <div className="review-list">
-            {currentQuizData.map((q, i) => {
-              const userAns = userAnswers[i];
-              const correctAns = fetchedCorrectAnswers[i];
-              const isCorrect = userAns === correctAns;
-              return (
-                <div key={i} className={`review-item ${isCorrect ? "review-item--correct" : "review-item--wrong"}`}>
-                  <div className="review-item__header">
-                    <span className="review-item__number">Q{i + 1}</span>
-                    <span className={`review-item__badge ${isCorrect ? "review-item__badge--correct" : "review-item__badge--wrong"}`}>
-                      {isCorrect ? "Correct" : "Incorrect"}
-                    </span>
-                  </div>
-                  <p className="review-item__question">{q.question}</p>
-                  <div className="review-item__answers">
-                    {q.options.map((opt, j) => {
-                      let cls = "review-option";
-                      if (j === correctAns) cls += " review-option--correct";
-                      if (j === userAns && j !== correctAns) cls += " review-option--wrong";
-                      return (
-                        <div key={j} className={cls}>
-                          <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
-                          <span>{opt}</span>
-                          {j === correctAns && <CheckIcon className="icon review-option__icon" />}
-                          {j === userAns && j !== correctAns && <ErrorIcon className="icon review-option__icon" />}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="review-item__explanation">
-                    <strong>{"\u{1F4A1}"} Explanation:</strong> {fetchedExplanations[i] ?? "Loading..."}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="actions" style={{ justifyContent: "center", marginTop: "1.5rem" }}>
-            <button type="button" className="button button--primary" onClick={resetQuiz}>
-              <ArrowLeftIcon className="icon" />
-              Back to Dashboard
-            </button>
-          </div>
-        </section>
-      </main>
-    );
-  }
-
-  /* ─── Past Attempt Review State ─── */
-  if (quizState === "past-review" && pastReviewAttempt) {
-    const pastQuizData = QUIZZES[pastReviewAttempt.quizId] ?? [];
-    const pastQuizTitle = AVAILABLE_QUIZZES.find(q => q.id === pastReviewAttempt.quizId)?.title ?? "Quiz";
-
-    return (
-      <main className="page-shell">
-        <FloatingParticles />
-        <section className="card review-card">
-          <div className="quiz-topbar">
-            <button
-              type="button"
-              className="button button--ghost quiz-back-btn"
-              onClick={() => { setPastReviewAttempt(null); setQuizState("dashboard"); }}
-            >
-              <ArrowLeftIcon className="icon" />
-              Dashboard
-            </button>
-            <span className="quiz-topbar__user" style={{ fontWeight: 700, color: "var(--dc-text-primary)" }}>
-              {pastQuizTitle} — Past Attempt
-            </span>
-          </div>
-
-          <div className="review-summary">
-            <span className="review-summary__score">
-              {pastReviewAttempt.score} / {pastReviewAttempt.total} correct ({pastReviewAttempt.percentage}%)
-            </span>
-            <span style={{ fontSize: "0.82rem", color: "var(--dc-text-muted)" }}>
-              {pastReviewAttempt.completedAt ? new Date(pastReviewAttempt.completedAt).toLocaleString() : ""}
-            </span>
-          </div>
-
-          <div className="review-list">
-            {pastQuizData.map((q, i) => {
-              const userAns = pastReviewAttempt.userAnswers?.[i];
-              return (
-                <div key={i} className="review-item review-item--wrong">
-                  <div className="review-item__header">
-                    <span className="review-item__number">Q{i + 1}</span>
-                  </div>
-                  <p className="review-item__question">{q.question}</p>
-                  <div className="review-item__answers">
-                    {q.options.map((opt, j) => {
-                      let cls = "review-option";
-                      if (j === userAns) cls += " review-option--wrong";
-                      return (
-                        <div key={j} className={cls}>
-                          <span className="review-option__letter">{OPTION_LETTERS[j]}</span>
-                          <span>{opt}</span>
-                          {j === userAns && <span className="icon review-option__icon">{"\u{1F448}"} You chose</span>}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div className="review-item__explanation" style={{ opacity: 0.7 }}>
-                    <em>Explanations and correct answers are only visible immediately after taking the quiz to prevent answer sharing.</em>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="actions" style={{ justifyContent: "center", marginTop: "1.5rem" }}>
-            <button type="button" className="button button--primary" onClick={() => { setPastReviewAttempt(null); setQuizState("dashboard"); }}>
-              <ArrowLeftIcon className="icon" />
-              Back to Dashboard
-            </button>
-          </div>
-        </section>
-      </main>
-    );
-  }
-
-  /* ─── Results State ─── */
-  if (quizState === "results") {
-    const result = getResultSummary(score, currentQuizData.length);
-
-    return (
-      <main className="page-shell">
-        <FloatingParticles />
-        {showConfetti && <Confetti />}
-        <section className="card card--compact results-card">
-          <p className="eyebrow">Quiz complete</p>
-          <h1 className="hero-title">Your Results</h1>
-
-          <div className="score-badge">
-            <strong>
-              {score} / {currentQuizData.length}
-            </strong>
-            <span>{result.percentage}%</span>
-          </div>
-
-          <div className={`level-badge ${result.levelClass}`}>
-            {result.emoji} {result.level}
-          </div>
-
-          {bestStreak > 0 && (
-            <p
-              style={{
-                color: "var(--dc-text-muted)",
-                fontSize: "0.85rem",
-                marginTop: "0.5rem",
-              }}
-            >
-              {"\u{1F525}"} Best streak: {bestStreak} in a row
-            </p>
-          )}
-
-          <p className="support-copy" style={{ textAlign: "center" }}>
-            {result.message}
-          </p>
-
-          {!relayConfigured && (
-            <div className="notice notice--warning">
-              <ErrorIcon className="icon" />
-              <span>
-                Add VITE_DISCORD_RELAY_URL in .env to enable sharing.
-              </span>
-            </div>
-          )}
-
-          {relayConfigured && !turnstileConfigured && (
-            <div className="notice notice--warning">
-              <ErrorIcon className="icon" />
-              <span>
-                Add VITE_TURNSTILE_SITE_KEY to enable the Worker&apos;s anti-spam check.
-              </span>
-            </div>
-          )}
-
-          {turnstileConfigured && (
-            <div
-              style={{
-                width: "100%",
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "0.5rem",
-              }}
-            >
-              <div ref={turnstileContainerRef} />
-              {!turnstileToken && (
-                <span
-                  style={{
-                    color: "var(--dc-text-muted)",
-                    fontSize: "0.82rem",
-                    textAlign: "center",
-                  }}
-                >
-                  Complete the anti-spam check to enable sharing.
-                </span>
-              )}
-              {turnstileError && (
-                <div className="notice notice--error" style={{ width: "100%" }}>
-                  <ErrorIcon className="icon" />
-                  <span>{turnstileError}</span>
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="actions" style={{ justifyContent: "center", flexDirection: "column", alignItems: "center", gap: "0.6rem" }}>
-            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", justifyContent: "center" }}>
-              <button
-                type="button"
-                className="button button--discord"
-                onClick={sendResultsToDiscord}
-                disabled={
-                  webhookStatus === "sending" ||
-                  !relayConfigured ||
-                  (turnstileConfigured && !turnstileToken)
-                }
-              >
-                {webhookStatus === "sending" ? (
-                  <>
-                    <SpinnerIcon className="icon icon--spin" />
-                    Sending...
-                  </>
-                ) : (
-                  <>
-                    <DiscordLogo />
-                    Share to Discord
-                  </>
-                )}
-              </button>
-
-              <button
-                type="button"
-                className="button button--primary"
-                onClick={() => setQuizState("review")}
-              >
-                {"\u{1F50D}"} Review Answers
-              </button>
-            </div>
 
             <button
               type="button"
               className="button button--ghost"
-              onClick={resetQuiz}
+              onClick={handleLogout}
+              style={{ fontSize: "0.8rem", minHeight: "2.2rem", padding: "0.35rem 0.9rem" }}
             >
-              <ArrowLeftIcon className="icon" />
-              Back to Dashboard
+              Logout
             </button>
           </div>
+        )}
+      </div>
 
-          {webhookStatus === "success" && (
-            <div className="notice notice--success">
-              <CheckIcon className="icon" />
-              <span>Results sent to your Discord channel!</span>
-            </div>
-          )}
-
-          {webhookStatus === "error" && (
-            <div className="notice notice--error">
-              <ErrorIcon className="icon" />
-              <span>Could not share the result. Check the relay URL or Worker logs.</span>
-            </div>
-          )}
-        </section>
-      </main>
-    );
-  }
-
-  /* ─── Dashboard State ─── */
-  if (quizState === "dashboard" && user) {
-    return (
-      <main className="dashboard-layout page-shell">
-        <FloatingParticles />
-        <div className="dashboard-container">
-          <header className="dashboard-header">
-            <div className="dashboard-header__content">
-              <div className="dashboard-header__left">
-                <img src={user.avatar} alt="" className="dashboard-avatar" />
-                <div>
-                  <p className="eyebrow">{"\u{1F44B}"} Welcome back</p>
-                  <h1 className="dashboard-title">{user.username}</h1>
-                </div>
-              </div>
-              <div className="user-panel">
-                <button type="button" className="button button--ghost" onClick={handleLogout} style={{ fontSize: "0.8rem", height: "2.2rem", padding: "0 0.9rem", minHeight: "auto" }}>
-                  Logout
-                </button>
-              </div>
-            </div>
-          </header>
-
-          {loadingUserStats && !userStats && (
-            <div className="notice notice--warning" style={{ marginBottom: "1.25rem" }}>
-              <SpinnerIcon className="icon icon--spin" />
-              <span>Syncing your progress from Firestore...</span>
-            </div>
-          )}
-
-          {/* Stats Cards Row */}
-          <section className="stats-row">
-            <div className="stat-card">
-              <div className="stat-card__icon stat-card__icon--blue">{"\u{1F3AF}"}</div>
-              <div className="stat-card__info">
-                <span className="stat-card__value">{userStatsView.totalAttempts}</span>
-                <span className="stat-card__label">Quizzes Taken</span>
-              </div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-card__icon stat-card__icon--green">{"\u{1F451}"}</div>
-              <div className="stat-card__info">
-                <span className="stat-card__value">{userStatsView.bestScore}</span>
-                <span className="stat-card__label">Best Score</span>
-              </div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-card__icon stat-card__icon--orange">{"\u{1F525}"}</div>
-              <div className="stat-card__info">
-                <span className="stat-card__value">{userStatsView.bestStreak}</span>
-                <span className="stat-card__label">Best Streak</span>
-              </div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-card__icon stat-card__icon--purple">{"\u{1F4CA}"}</div>
-              <div className="stat-card__info">
-                <span className="stat-card__value">
-                  {recentQuizHistory.length
-                    ? `${Math.round(recentQuizHistory.reduce((s, h) => s + (h.percentage ?? 0), 0) / recentQuizHistory.length)}%`
-                    : "—"}
-                </span>
-                <span className="stat-card__label">Avg Score</span>
-              </div>
-            </div>
-          </section>
-
-          <section className="dashboard-content">
-            <h2 className="dashboard-section-title">Available Quizzes</h2>
-            <div className="quiz-grid">
-              {AVAILABLE_QUIZZES.map((quiz) => {
-                const attemptCount = recentQuizHistory.filter((h) => h.quizId === quiz.id).length;
-                return (
-                  <div
-                    key={quiz.id}
-                    ref={(el) => { quizCardRefs.current[quiz.id] = el; }}
-                    className="dashboard-quiz-card"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => handleStartQuiz(quiz.id)}
-                    onKeyDown={(event) => handleQuizCardKeyDown(event, quiz.id)}
-                  >
-                    <div className="quiz-card__image-wrapper">
-                      <img
-                        src={quiz.image}
-                        alt=""
-                        aria-hidden="true"
-                        className="quiz-card__image"
-                        loading="lazy"
-                        decoding="async"
-                      />
-                      <span className="quiz-card__image-tag">{quiz.tagline}</span>
-                      {quiz.isNew && (!loadingUserStats || userStats) && !seenQuizIds.has(quiz.id) && (
-                        <span className="quiz-card__badge">New</span>
-                      )}
-                    </div>
-                    <div className="quiz-card__body">
-                      <div className="quiz-card__copy">
-                        <h3>{quiz.title}</h3>
-                        <p>{quiz.description}</p>
-                      </div>
-                      <div className="quiz-card__meta">
-                        <span className="meta-tag">
-                          <span className="meta-tag__label">Level</span>
-                          <span className="meta-tag__value">{quiz.level}</span>
-                        </span>
-                        <span className="meta-tag">
-                          <span className="meta-tag__label">Duration</span>
-                          <span className="meta-tag__value">{quiz.duration}</span>
-                        </span>
-                        <span className="meta-tag">
-                          <span className="meta-tag__label">Questions</span>
-                          <span className="meta-tag__value">{QUIZZES[quiz.id]?.length ?? 0}</span>
-                        </span>
-                        {attemptCount > 0 && (
-                          <span className="meta-tag meta-tag--accent">
-                            <span className="meta-tag__label">Attempts</span>
-                            <span className="meta-tag__value">{attemptCount}</span>
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="quiz-card__cta">
-                      <span>Start Quiz</span>
-                      <ArrowRightIcon className="icon" />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
-
-          {/* Recent Activity */}
-          {recentQuizHistory.length > 0 && (
-            <section className="dashboard-content">
-              <h2 className="dashboard-section-title">Recent Activity</h2>
-              <div className="activity-list">
-                {recentQuizHistory.slice(-5).reverse().map((h, i) => {
-                  const quizMeta = AVAILABLE_QUIZZES.find(q => q.id === h.quizId);
-                  return (
-                    <div key={i} className="activity-item">
-                      {quizMeta && (
-                        <button
-                          type="button"
-                          className="activity-item__quiz-name"
-                          onClick={() => scrollToQuizCard(h.quizId)}
-                          title={`Scroll to ${quizMeta.title}`}
-                        >
-                          {quizMeta.title}
-                        </button>
-                      )}
-                      <div className="activity-item__score">
-                        <strong>{h.score}/{h.total}</strong>
-                        <span>({h.percentage}%)</span>
-                      </div>
-                      <span className={`level-badge level-badge--${h.level?.toLowerCase()}`} style={{ fontSize: "0.7rem", padding: "0.15rem 0.55rem", marginTop: 0 }}>
-                        {h.level}
-                      </span>
-                      <span className="activity-item__date">
-                        {h.completedAt ? new Date(h.completedAt).toLocaleDateString() : "—"}
-                      </span>
-                      {h.userAnswers?.length > 0 && (
-                        <button
-                          type="button"
-                          className="button button--ghost activity-item__review-btn"
-                          onClick={() => handleViewPastAttempt(h)}
-                        >
-                          View Results
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-          )}
-        </div>
-      </main>
-    );
-  }
-
-  /* ─── Welcome / Landing State ─── */
-  return (
-    <main className="page-shell">
-      <FloatingParticles />
-      <section className="card hero-card">
-        <div className="hero-copy">
-          <p className="eyebrow">{"\u{1F30D}"} Discord community activity</p>
-          <h1 className="hero-title">Modern Spoken English Quiz</h1>
-          <p className="support-copy">
-            Log in with Discord, test your everyday English skills, and share
-            your score with the community. Quick, fun, and competitive!
-          </p>
-
-          {authError && (
-            <div className="notice notice--error">
-              <ErrorIcon className="icon" />
-              <span>{authError}</span>
-            </div>
-          )}
-
-          {!user ? (
-            <button
-              type="button"
-              className="button button--discord"
-              onClick={handleDiscordLogin}
-            >
-              <DiscordLogo />
-              Login with Discord
-            </button>
-          ) : (
-            <div className="user-panel">
-              <div className="user-chip">
-                <img src={user.avatar} alt="" className="avatar" />
-                <span>{user.username}</span>
-              </div>
-
-              <button
-                type="button"
-                className="button button--primary"
-                onClick={() => setQuizState("dashboard")}
-              >
-                Go to Dashboard
-                <ArrowRightIcon className="icon" />
-              </button>
-
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={handleLogout}
-                style={{ fontSize: "0.8rem", minHeight: "2.2rem", padding: "0.35rem 0.9rem" }}
-              >
-                Logout
-              </button>
-            </div>
-          )}
-        </div>
-
-        <aside className="setup-panel" aria-label="Your progress">
-          <div className="setup-panel__header">
-            <TrophyIcon className="icon icon--accent icon--large" />
-            <div>
-              <h2>{user ? "Your Stats" : "Setup Checklist"}</h2>
-              <p>{user ? "Progress saved to cloud" : "Configure before deploying"}</p>
-            </div>
+      <aside className="setup-panel" aria-label="Your progress">
+        <div className="setup-panel__header">
+          <TrophyIcon className="icon icon--accent icon--large" />
+          <div>
+            <h2>{user ? "Your Stats" : "Setup Checklist"}</h2>
+            <p>{user ? "Progress saved to cloud" : "Configure before deploying"}</p>
           </div>
+        </div>
 
-          {user && userStats ? (
-            <>
-              <ul className="setup-list">
-                <li className="is-ready">
-                  <span className="setup-list__status" />
-                  Total attempts: <strong style={{ marginLeft: "auto" }}>{userStats.totalAttempts ?? 0}</strong>
-                </li>
-                <li className="is-ready">
-                  <span className="setup-list__status" />
-                  Best score: <strong style={{ marginLeft: "auto" }}>{userStats.bestScore ?? 0}/{currentQuizData.length}</strong>
-                </li>
-                <li className="is-ready">
-                  <span className="setup-list__status" />
-                  Best streak: <strong style={{ marginLeft: "auto" }}>{"\u{1F525}"} {userStats.bestStreak ?? 0}</strong>
-                </li>
-              </ul>
-
-              {userStats.quizHistory?.length > 0 && (
-                <div className="setup-note">
-                  <strong>Recent Attempts</strong>
-                  {userStats.quizHistory.slice(-3).reverse().map((h, i) => (
-                    <div key={i} style={{
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                      padding: "0.4rem 0.5rem", borderRadius: "6px",
-                      background: "var(--dc-bg-accent)", fontSize: "0.82rem"
-                    }}>
-                      <span>{h.score}/{h.total} ({h.percentage}%)</span>
-                      <span className={`level-badge level-badge--${h.level?.toLowerCase()}`}
-                        style={{ fontSize: "0.7rem", padding: "0.15rem 0.5rem", marginTop: 0 }}>
-                        {h.level}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : user && !userStats ? (
+        {user && userStats ? (
+          <>
             <ul className="setup-list">
               <li className="is-ready">
                 <span className="setup-list__status" />
-                First time here — take the quiz!
+                Total attempts: <strong style={{ marginLeft: "auto" }}>{userStats.totalAttempts ?? 0}</strong>
+              </li>
+              <li className="is-ready">
+                <span className="setup-list__status" />
+                Best score: <strong style={{ marginLeft: "auto" }}>{userStats.bestScore ?? 0}/{currentQuizData.length}</strong>
+              </li>
+              <li className="is-ready">
+                <span className="setup-list__status" />
+                Best streak: <strong style={{ marginLeft: "auto" }}>{"\u{1F525}"} {userStats.bestStreak ?? 0}</strong>
               </li>
             </ul>
-          ) : (
-            <>
-              <ul className="setup-list">
-                <li className={discordConfigured ? "is-ready" : "is-missing"}>
-                  <span className="setup-list__status" />
-                  Discord Client ID
-                </li>
-                <li className={relayConfigured ? "is-ready" : "is-missing"}>
-                  <span className="setup-list__status" />
-                  Discord relay URL
-                </li>
-                <li className={turnstileConfigured ? "is-ready" : "is-missing"}>
-                  <span className="setup-list__status" />
-                  Turnstile site key (recommended)
-                </li>
-                <li className="is-ready">
-                  <span className="setup-list__status" />
-                  Redirect URI (auto-generated)
-                </li>
-              </ul>
 
+            {userStats.quizHistory?.length > 0 && (
               <div className="setup-note">
-                <strong>Redirect URIs</strong>
-                <code>http://localhost:5173/</code>
-                <code>{REDIRECT_URI}</code>
+                <strong>Recent Attempts</strong>
+                {userStats.quizHistory.slice(-3).reverse().map((h, i) => (
+                  <div key={i} style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "0.4rem 0.5rem", borderRadius: "6px",
+                    background: "var(--dc-bg-accent)", fontSize: "0.82rem"
+                  }}>
+                    <span>{h.score}/{h.total} ({h.percentage}%)</span>
+                    <span className={`level-badge level-badge--${h.level?.toLowerCase()}`}
+                      style={{ fontSize: "0.7rem", padding: "0.15rem 0.5rem", marginTop: 0 }}>
+                      {h.level}
+                    </span>
+                  </div>
+                ))}
               </div>
-            </>
-          )}
-        </aside>
-      </section>
-    </main>
-  );
-}
+            )}
+          </>
+        ) : user && !userStats ? (
+          <ul className="setup-list">
+            <li className="is-ready">
+              <span className="setup-list__status" />
+              First time here — take the quiz!
+            </li>
+          </ul>
+        ) : (
+          <>
+            <ul className="setup-list">
+              <li className={discordConfigured ? "is-ready" : "is-missing"}>
+                <span className="setup-list__status" />
+                Discord Client ID
+              </li>
+              <li className={relayConfigured ? "is-ready" : "is-missing"}>
+                <span className="setup-list__status" />
+                Discord relay URL
+              </li>
+              <li className={turnstileConfigured ? "is-ready" : "is-missing"}>
+                <span className="setup-list__status" />
+                Turnstile site key (recommended)
+              </li>
+              <li className="is-ready">
+                <span className="setup-list__status" />
+                Redirect URI (auto-generated)
+              </li>
+            </ul>
+
+            <div className="setup-note">
+              <strong>Redirect URIs</strong>
+              <code>http://localhost:5173/</code>
+              <code>{REDIRECT_URI}</code>
+            </div>
+          </>
+        )}
+      </aside>
+    </section>
+  </main>
+);
+  }
