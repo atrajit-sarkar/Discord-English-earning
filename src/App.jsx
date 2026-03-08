@@ -1014,6 +1014,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          userId: user.id,
           username: user.username,
           avatar: user.avatar,
           quizId: currentQuizId,

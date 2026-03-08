@@ -87,6 +87,7 @@ function validatePayload(body, env) {
     return { ok: false, error: "Invalid JSON body." };
   }
 
+  const userId = sanitizeText(body.userId, "");
   const username = sanitizeText(body.username);
   const quizId = sanitizeText(body.quizId, "").toLowerCase();
   const quizTitle = sanitizeText(body.quizTitle, "Quiz");
@@ -94,6 +95,10 @@ function validatePayload(body, env) {
   const score = parseNonNegativeInteger(body.score);
   const total = parseNonNegativeInteger(body.total);
   const bestStreak = parseNonNegativeInteger(body.bestStreak);
+
+  if (!userId || userId.length > 64) {
+    return { ok: false, error: "Invalid user id." };
+  }
 
   if (!quizId || quizId.length > 64) {
     return { ok: false, error: "Invalid quiz id." };
@@ -126,6 +131,7 @@ function validatePayload(body, env) {
   return {
     ok: true,
     payload: {
+      userId,
       username,
       quizId,
       quizTitle,
@@ -138,6 +144,50 @@ function validatePayload(body, env) {
         typeof body.turnstileToken === "string" ? body.turnstileToken.trim() : "",
     },
   };
+}
+
+async function verifyFirestoreResult(userId, quizId, score, total, bestStreak, env) {
+  const projectId = env.FIREBASE_PROJECT_ID;
+  if (!projectId) {
+    return { verified: true };
+  }
+
+  const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/(default)/documents/English/${encodeURIComponent(userId)}`;
+
+  let response;
+  try {
+    response = await fetch(url);
+  } catch {
+    return { verified: false, reason: "Could not reach verification server." };
+  }
+
+  if (!response.ok) {
+    return { verified: false, reason: "User record not found." };
+  }
+
+  const doc = await response.json();
+  const fields = doc.fields;
+  if (!fields || !fields.quizHistory || !fields.quizHistory.arrayValue) {
+    return { verified: false, reason: "No quiz history found." };
+  }
+
+  const history = fields.quizHistory.arrayValue.values || [];
+  const match = history.some((entry) => {
+    const f = entry.mapValue?.fields;
+    if (!f) return false;
+    return (
+      f.quizId?.stringValue === quizId &&
+      Number(f.score?.integerValue) === score &&
+      Number(f.total?.integerValue) === total &&
+      Number(f.bestStreak?.integerValue) === bestStreak
+    );
+  });
+
+  if (!match) {
+    return { verified: false, reason: "Quiz result not found in records." };
+  }
+
+  return { verified: true };
 }
 
 async function verifyTurnstile(token, ipAddress, env) {
@@ -272,6 +322,24 @@ export default {
     if (!turnstileResult.success) {
       return jsonResponse(
         { error: "Anti-spam verification failed." },
+        403,
+        origin,
+        env
+      );
+    }
+
+    const firestoreCheck = await verifyFirestoreResult(
+      validation.payload.userId,
+      validation.payload.quizId,
+      validation.payload.score,
+      validation.payload.total,
+      validation.payload.bestStreak,
+      env
+    );
+
+    if (!firestoreCheck.verified) {
+      return jsonResponse(
+        { error: firestoreCheck.reason },
         403,
         origin,
         env
