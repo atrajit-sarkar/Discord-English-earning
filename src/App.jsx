@@ -560,6 +560,7 @@ export default function App() {
   const [loadingUserStats, setLoadingUserStats] = useState(false);
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [authError, setAuthError] = useState("");
+  const [isGuildMember, setIsGuildMember] = useState(false);
   const [quizState, setQuizState] = useState("welcome");
   const [currentQuizId, setCurrentQuizId] = useState(null);
   const currentQuizData = currentQuizId ? QUIZZES[currentQuizId] : [];
@@ -754,6 +755,26 @@ export default function App() {
               : "https://cdn.discordapp.com/embed/avatars/0.png",
           };
 
+          /* Check guild membership + channel access via worker */
+          let hasAccess = false;
+          if (relayConfigured) {
+            try {
+              const verifyRes = await fetch(DISCORD_RELAY_URL, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "verify-access", discordToken: accessToken }),
+              });
+              if (verifyRes.ok) {
+                const verifyData = await verifyRes.json();
+                hasAccess = verifyData.member && verifyData.channelAccess;
+              }
+            } catch { /* treat as no access */ }
+          }
+
+          if (isMountedRef.current) {
+            setIsGuildMember(hasAccess);
+          }
+
           const cachedProgress = applyDiscordUser(nextUser);
           if (cachedProgress) {
             finishLoading();
@@ -774,6 +795,28 @@ export default function App() {
       const savedUser = readStoredUser();
 
       if (savedUser?.id) {
+        /* Re-check guild membership + channel access with stored token */
+        const storedOauth = readStoredOauthResponse();
+        const storedToken = storedOauth?.accessToken;
+        let hasAccess = false;
+        if (storedToken && relayConfigured) {
+          try {
+            const verifyRes = await fetch(DISCORD_RELAY_URL, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "verify-access", discordToken: storedToken }),
+            });
+            if (verifyRes.ok) {
+              const verifyData = await verifyRes.json();
+              hasAccess = verifyData.member && verifyData.channelAccess;
+            }
+          } catch { /* treat as no access */ }
+        }
+
+        if (isMountedRef.current) {
+          setIsGuildMember(hasAccess);
+        }
+
         const cachedProgress = applyDiscordUser(savedUser);
         if (cachedProgress) {
           finishLoading();
@@ -935,6 +978,7 @@ export default function App() {
     setUser(null);
     setUserStats(null);
     setLoadingUserStats(false);
+    setIsGuildMember(false);
     setQuizState("welcome");
   }
 
@@ -1004,6 +1048,10 @@ export default function App() {
 
       if (!response.ok) {
         const errBody = await response.json().catch(() => ({}));
+        if (response.status === 401) {
+          handleLogout();
+          throw new Error("Your session has expired. Please log in again.");
+        }
         throw new Error(errBody.error || "Failed to submit quiz.");
       }
 
@@ -1074,6 +1122,10 @@ export default function App() {
       });
 
       if (!response.ok) {
+        if (response.status === 401) {
+          handleLogout();
+          throw new Error("Your session has expired. Please log in again.");
+        }
         const errBody = await response.text();
         console.error("Relay error body:", errBody);
         throw new Error(`Relay responded with ${response.status}: ${errBody}`);
@@ -1139,8 +1191,35 @@ export default function App() {
     setSubmitError("");
   }
 
-  function handleStartQuiz(quizId) {
+  async function handleStartQuiz(quizId) {
     if (userStats?.quizHistory?.some(h => h.quizId === quizId)) return;
+
+    // Verify Discord token is still valid before starting the quiz
+    const oauthData = readStoredOauthResponse();
+    const discordToken = oauthData?.accessToken;
+    if (!discordToken) {
+      handleLogout();
+      return;
+    }
+
+    try {
+      const verifyRes = await fetch("https://discord.com/api/users/@me", {
+        headers: { Authorization: `Bearer ${discordToken}` },
+      });
+      if (!verifyRes.ok) {
+        handleLogout();
+        return;
+      }
+      const discordUser = await verifyRes.json();
+      if (discordUser.id !== user?.id) {
+        handleLogout();
+        return;
+      }
+    } catch {
+      handleLogout();
+      return;
+    }
+
     setCurrentQuizId(quizId);
     setCurrentQuestion(0);
     setScore(0);
@@ -1218,6 +1297,59 @@ export default function App() {
           <SpinnerIcon className="icon icon--spin icon--large" />
           <p>Logging you in...</p>
         </section>
+      </main>
+    );
+  }
+
+  /* ─── Join Discord Gate ─── */
+  if (user && !isGuildMember) {
+    return (
+      <main className="login-page">
+        <FloatingParticles />
+        <div className="login-card">
+          <div className="login-card__logo">
+            <DiscordLogo />
+          </div>
+          <h1 className="login-card__title">Join Our Server</h1>
+          <p className="login-card__subtitle">
+            You need to be a member of our Discord server and have access to the quiz channel to continue.
+          </p>
+
+          <div className="login-card__divider" />
+
+          <a
+            href="https://discord.gg/UqmHQSSKcp"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="button button--discord"
+            style={{ textDecoration: "none", textAlign: "center" }}
+          >
+            <DiscordLogo />
+            Join Discord Server
+          </a>
+
+          <p style={{ color: "var(--dc-text-muted)", fontSize: "0.85rem", marginTop: "1rem", textAlign: "center" }}>
+            After joining, click below to refresh your status.
+          </p>
+
+          <button
+            type="button"
+            className="button button--primary"
+            onClick={() => window.location.reload()}
+            style={{ marginTop: "0.5rem" }}
+          >
+            {"\u{1F504}"} I've Joined — Refresh
+          </button>
+
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={handleLogout}
+            style={{ marginTop: "0.5rem", fontSize: "0.8rem" }}
+          >
+            Logout
+          </button>
+        </div>
       </main>
     );
   }
@@ -1844,12 +1976,6 @@ export default function App() {
                           <span className="meta-tag__label">Questions</span>
                           <span className="meta-tag__value">{QUIZZES[quiz.id]?.length ?? 0}</span>
                         </span>
-                        {attemptCount > 0 && (
-                          <span className="meta-tag meta-tag--accent">
-                            <span className="meta-tag__label">Attempts</span>
-                            <span className="meta-tag__value">{attemptCount}</span>
-                          </span>
-                        )}
                       </div>
                     </div>
                     <div className={`quiz-card__cta ${attemptCount > 0 ? "quiz-card__cta--disabled" : ""}`} style={attemptCount > 0 ? { opacity: 0.5, cursor: "not-allowed" } : {}}>

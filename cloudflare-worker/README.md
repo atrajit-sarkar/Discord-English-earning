@@ -30,3 +30,12 @@ Add these in the main project `.env`:
 
 - `VITE_DISCORD_RELAY_URL=https://<your-worker-subdomain>.workers.dev`
 - `VITE_TURNSTILE_SITE_KEY=<your-site-key>` if Turnstile is enabled
+
+## Permission check API
+
+The Worker `verify-access` action accepts:
+
+- `discordToken`: the user's Discord OAuth access token
+- `channelId` (optional): a specific Discord channel ID to check
+
+If `channelId` is omitted, the Worker falls back to the configured `REQUIRED_CHANNEL_ID`.

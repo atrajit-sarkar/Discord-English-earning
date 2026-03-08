@@ -8,8 +8,12 @@ const RESULT_LEVELS = [
   { minPercentage: 0, level: "Beginner", emoji: "\u{1F4DA}", color: 0xf47b67 },
 ];
 
-const SUBMIT_COOLDOWN_MS = 120_000; // 2 minutes between quiz submissions per quiz
 const SHARE_COOLDOWN_MS = 60_000;   // 60 seconds between Discord shares
+
+const REQUIRED_GUILD_ID = "1183341118360928327";
+const REQUIRED_CHANNEL_ID = "1478308208689811568";
+const VIEW_CHANNEL_BIT = 0x400n;
+const ADMINISTRATOR_BIT = 0x8n;
 
 /* ── Server-side answer keys are now in Firestore ── */
 
@@ -601,6 +605,136 @@ export default {
 
       const action = body.action || "submit";
 
+      /* ── verify-access: check guild membership + channel access ── */
+      if (action === "verify-access") {
+        if (!env.DISCORD_BOT_TOKEN) {
+          return jsonResponse({ error: "Bot token not configured." }, 500, origin, env);
+        }
+
+        const discordToken = typeof body.discordToken === "string" ? body.discordToken.trim() : "";
+        const requestedChannelId = typeof body.channelId === "string" ? body.channelId.trim() : "";
+        const channelId = requestedChannelId || REQUIRED_CHANNEL_ID;
+        if (!discordToken) {
+          return jsonResponse({ error: "Missing Discord token." }, 401, origin, env);
+        }
+        if (!/^\d+$/.test(channelId)) {
+          return jsonResponse({ error: "Invalid channel ID." }, 400, origin, env);
+        }
+
+        // Verify user identity via their OAuth token
+        let discordUserId;
+        try {
+          const meRes = await fetch("https://discord.com/api/users/@me", {
+            headers: { Authorization: `Bearer ${discordToken}` },
+          });
+          if (!meRes.ok) {
+            return jsonResponse({ error: "Discord token invalid." }, 401, origin, env);
+          }
+          const me = await meRes.json();
+          discordUserId = me.id;
+        } catch {
+          return jsonResponse({ error: "Failed to verify Discord identity." }, 401, origin, env);
+        }
+
+        // Check guild membership using bot token
+        let memberRoles;
+        try {
+          const memberRes = await fetch(
+            `https://discord.com/api/guilds/${REQUIRED_GUILD_ID}/members/${encodeURIComponent(discordUserId)}`,
+            { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
+          );
+          if (memberRes.status === 404) {
+            return jsonResponse({ ok: true, member: false, channelAccess: false }, 200, origin, env);
+          }
+          if (!memberRes.ok) {
+            return jsonResponse({ error: "Failed to check guild membership." }, 502, origin, env);
+          }
+          const memberData = await memberRes.json();
+          memberRoles = memberData.roles || [];
+        } catch {
+          return jsonResponse({ error: "Failed to check guild membership." }, 502, origin, env);
+        }
+
+        // Get guild roles to compute base permissions
+        let guildRolesMap;
+        try {
+          const rolesRes = await fetch(
+            `https://discord.com/api/guilds/${REQUIRED_GUILD_ID}/roles`,
+            { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
+          );
+          if (!rolesRes.ok) {
+            return jsonResponse({ error: "Failed to fetch guild roles." }, 502, origin, env);
+          }
+          const roles = await rolesRes.json();
+          guildRolesMap = new Map(roles.map(r => [r.id, r]));
+        } catch {
+          return jsonResponse({ error: "Failed to fetch guild roles." }, 502, origin, env);
+        }
+
+        // Compute base permissions from @everyone + member roles
+        const everyoneRole = guildRolesMap.get(REQUIRED_GUILD_ID);
+        let permissions = BigInt(everyoneRole?.permissions ?? "0");
+        for (const roleId of memberRoles) {
+          const role = guildRolesMap.get(roleId);
+          if (role) {
+            permissions |= BigInt(role.permissions);
+          }
+        }
+
+        // Administrator bypasses all channel checks
+        if (permissions & ADMINISTRATOR_BIT) {
+          return jsonResponse({ ok: true, member: true, channelAccess: true }, 200, origin, env);
+        }
+
+        // Get channel permission overwrites
+        try {
+          const chanRes = await fetch(
+            `https://discord.com/api/channels/${channelId}`,
+            { headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` } }
+          );
+          if (!chanRes.ok) {
+            return jsonResponse({ error: "Failed to fetch channel info." }, 502, origin, env);
+          }
+          const channel = await chanRes.json();
+          if (channel.guild_id !== REQUIRED_GUILD_ID) {
+            return jsonResponse({ error: "Channel is not in the configured guild." }, 400, origin, env);
+          }
+          const overwrites = channel.permission_overwrites || [];
+
+          // Apply @everyone overwrite
+          const evOverwrite = overwrites.find(o => o.id === REQUIRED_GUILD_ID);
+          if (evOverwrite) {
+            permissions &= ~BigInt(evOverwrite.deny);
+            permissions |= BigInt(evOverwrite.allow);
+          }
+
+          // Apply role overwrites
+          let roleAllow = 0n;
+          let roleDeny = 0n;
+          for (const roleId of memberRoles) {
+            const ow = overwrites.find(o => o.id === roleId && o.type === 0);
+            if (ow) {
+              roleAllow |= BigInt(ow.allow);
+              roleDeny |= BigInt(ow.deny);
+            }
+          }
+          permissions &= ~roleDeny;
+          permissions |= roleAllow;
+
+          // Apply member-specific overwrite
+          const memberOverwrite = overwrites.find(o => o.id === discordUserId && o.type === 1);
+          if (memberOverwrite) {
+            permissions &= ~BigInt(memberOverwrite.deny);
+            permissions |= BigInt(memberOverwrite.allow);
+          }
+        } catch {
+          return jsonResponse({ error: "Failed to check channel permissions." }, 502, origin, env);
+        }
+
+        const hasChannelAccess = Boolean(permissions & VIEW_CHANNEL_BIT);
+        return jsonResponse({ ok: true, member: true, channelAccess: hasChannelAccess }, 200, origin, env);
+      }
+
       const validation = await validatePayload(body, env, action === "share");
       if (!validation.ok) {
         return jsonResponse({ error: validation.error }, 400, origin, env);
@@ -660,6 +794,20 @@ export default {
 
       if (action === "submit") {
         const userDoc = await getUserDocumentFromFirestore(validation.payload.userId, env);
+
+        // One-time submit: reject if the user already submitted this quiz
+        const prevHistory = userDoc?.existing?.quizHistory?.arrayValue?.values ?? [];
+        const alreadySubmitted = prevHistory.some(
+          (entry) => entry?.mapValue?.fields?.quizId?.stringValue === validation.payload.quizId
+        );
+        if (alreadySubmitted) {
+          return jsonResponse(
+            { error: "You have already submitted this quiz." },
+            409,
+            origin,
+            env
+          );
+        }
 
         // Save verified result to Firestore using admin credentials
         const saveResult = await saveResultToFirestore(validation.payload, env, userDoc);
